@@ -1,0 +1,43 @@
+{
+  "voices": [
+    {
+      "id": "kokoro-af-heart",
+      "name": "Heart (US Female)",
+      "accent": "US",
+      "gender": "Female",
+      "model_type": "kokoro",
+      "speaker_id": 0,
+      "sample_rate": 24000,
+      "size_bytes": 125829120,
+      "remote_url": "https://cdn.readzen.app/v1/voices/kokoro-en-v0_19.tar.bz2",
+      "preview_url": "https://cdn.readzen.app/v1/voices/previews/kokoro-af-heart.wav",
+      "sha256_checksum": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "id": "kokoro-am-adam",
+      "name": "Adam (US Male)",
+      "accent": "US",
+      "gender": "Male",
+      "model_type": "kokoro",
+      "speaker_id": 1,
+      "sample_rate": 24000,
+      "size_bytes": 125829120,
+      "remote_url": "https://cdn.readzen.app/v1/voices/kokoro-en-v0_19.tar.bz2",
+      "preview_url": "https://cdn.readzen.app/v1/voices/previews/kokoro-am-adam.wav",
+      "sha256_checksum": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "id": "piper-en-gb-alba",
+      "name": "Alba (UK Female)",
+      "accent": "UK",
+      "gender": "Female",
+      "model_type": "piper",
+      "speaker_id": 0,
+      "sample_rate": 22050,
+      "size_bytes": 62914560,
+      "remote_url": "https://cdn.readzen.app/v1/voices/vits-piper-en_GB-alba-medium.tar.bz2",
+      "preview_url": "https://cdn.readzen.app/v1/voices/previews/piper-en-gb-alba.wav",
+      "sha256_checksum": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  "updated_at": "2026-11-14T00:00:00Z",
+  "books": [
+    {
+      "id": "seed-sherlock-bohemia",
+      "title": "The Adventures of Sherlock Holmes (A Scandal in Bohemia)",
+      "author": "Arthur Conan Doyle",
+      "description": "The first Sherlock Holmes short story collection opening with A Scandal in Bohemia, bundled offline for instant reading.",
+      "genres": ["Mystery", "Classics", "Fiction"],
+      "remote_cover_url": "https://cdn.readzen.app/v1/covers/seed-sherlock-bohemia.webp",
+      "remote_epub_url": "https://cdn.readzen.app/v1/epubs/seed-sherlock-bohemia.epub",
+      "local_file_path": "assets/seed/sample_classic.txt",
+      "source_type": "bundled_seed",
+      "format": "txt",
+      "word_count": 850,
+      "file_size_bytes": 5120,
+      "sha256_checksum": "0000000000000000000000000000000000000000000000000000000000000001",
+      "is_downloaded": true
+    },
+    {
+      "id": "se-pride-and-prejudice",
+      "title": "Pride and Prejudice",
+      "author": "Jane Austen",
+      "description": "A classic novel of manners exploring love, reputation, and class in Regency England through Elizabeth Bennet and Mr. Darcy.",
+      "genres": ["Romance", "Classics", "Fiction"],
+      "remote_cover_url": "https://cdn.readzen.app/v1/covers/se-pride-and-prejudice.webp",
+      "remote_epub_url": "https://cdn.readzen.app/v1/epubs/se-pride-and-prejudice.epub",
+      "word_count": 122189,
+      "file_size_bytes": 684210,
+      "sha256_checksum": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "id": "se-frankenstein",
+      "title": "Frankenstein",
+      "author": "Mary Shelley",
+      "description": "Victor Frankenstein creates a sentient creature in an unorthodox scientific experiment, facing profound moral consequences.",
+      "genres": ["Science Fiction", "Gothic", "Classics"],
+      "remote_cover_url": "https://cdn.readzen.app/v1/covers/se-frankenstein.webp",
+      "remote_epub_url": "https://cdn.readzen.app/v1/epubs/se-frankenstein.epub",
+      "word_count": 75040,
+      "file_size_bytes": 492100,
+      "sha256_checksum": "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+    },
+    {
+      "id": "se-dorian-gray",
+      "title": "The Picture of Dorian Gray",
+      "author": "Oscar Wilde",
+      "description": "A philosophical Gothic novel about vanity, moral corruption, and a portrait that ages in place of its subject.",
+      "genres": ["Gothic", "Philosophy", "Classics"],
+      "remote_cover_url": "https://cdn.readzen.app/v1/covers/se-dorian-gray.webp",
+      "remote_epub_url": "https://cdn.readzen.app/v1/epubs/se-dorian-gray.epub",
+      "word_count": 78950,
+      "file_size_bytes": 518340,
+      "sha256_checksum": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a"
+    },
+    {
+      "id": "se-alice-wonderland",
+      "title": "Alice's Adventures in Wonderland",
+      "author": "Lewis Carroll",
+      "description": "Alice falls through a rabbit hole into a whimsical subterranean world populated by curious anthropomorphic creatures.",
+      "genres": ["Fantasy", "Classics", "Fiction"],
+      "remote_cover_url": "https://cdn.readzen.app/v1/covers/se-alice-wonderland.webp",
+      "remote_epub_url": "https://cdn.readzen.app/v1/epubs/se-alice-wonderland.epub",
+      "word_count": 26445,
+      "file_size_bytes": 310200,
+      "sha256_checksum": "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d"
+    },
+    {
+      "id": "se-meditations",
+      "title": "Meditations",
+      "author": "Marcus Aurelius",
+      "description": "Private notes on Stoic philosophy written by the Roman Emperor Marcus Aurelius as guidance for self-improvement and resilience.",
+      "genres": ["Philosophy", "Non-Fiction", "Classics"],
+      "remote_cover_url": "https://cdn.readzen.app/v1/covers/se-meditations.webp",
+      "remote_epub_url": "https://cdn.readzen.app/v1/epubs/se-meditations.epub",
+      "word_count": 46200,
+      "file_size_bytes": 389120,
+      "sha256_checksum": "e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683"
+    }
+  ]
+}

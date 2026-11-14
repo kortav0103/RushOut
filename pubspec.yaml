@@ -1,0 +1,34 @@
+name: readzen
+description: ReadZen — 100% Free, Offline-First Ebook Reader, AI Audiobook TTS, Lofi Sanctuary & Xiangqi app.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1
+  go_router: ^14.6.2
+  drift: ^2.22.1
+  sqlite3_flutter_libs: ^0.5.28
+  sqlite3: ^2.5.0
+  shared_preferences: ^2.3.3
+  dio: ^5.7.0
+  crypto: ^3.0.6
+  path_provider: ^2.1.5
+  path: ^1.9.0
+  archive: ^4.0.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  drift_dev: ^2.22.1
+  build_runner: ^2.4.13
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/seed/

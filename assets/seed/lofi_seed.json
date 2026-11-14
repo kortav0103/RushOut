@@ -1,0 +1,35 @@
+{
+  "tracks": [
+    {
+      "id": "lofi-rain",
+      "title": "Midnight Rain",
+      "artist": "ReadZen Studio",
+      "duration_sec": 185,
+      "stream_url": "https://cdn.readzen.app/v1/lofi/midnight_rain.aac",
+      "local_path": "assets/seed/lofi_rain_preview.aac",
+      "sha256_checksum": "1111111111111111111111111111111111111111111111111111111111111111",
+      "is_bundled": true,
+      "is_cached": true
+    },
+    {
+      "id": "lofi-cafe",
+      "title": "Warm Sepia Cafe",
+      "artist": "ReadZen Studio",
+      "duration_sec": 212,
+      "stream_url": "https://cdn.readzen.app/v1/lofi/warm_sepia_cafe.aac",
+      "sha256_checksum": "2222222222222222222222222222222222222222222222222222222222222222",
+      "is_bundled": false,
+      "is_cached": false
+    },
+    {
+      "id": "lofi-night",
+      "title": "Quiet Library Nights",
+      "artist": "ReadZen Studio",
+      "duration_sec": 240,
+      "stream_url": "https://cdn.readzen.app/v1/lofi/quiet_library_nights.aac",
+      "sha256_checksum": "3333333333333333333333333333333333333333333333333333333333333333",
+      "is_bundled": false,
+      "is_cached": false
+    }
+  ]
+}
