@@ -90,26 +90,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final completed = await _tutorialService.hasCompletedTutorial();
       if (!mounted) return;
 
-      if (!completed) {
-        final levels = await widget.getLevelsUseCase();
-        if (!mounted) return;
-        if (levels.isNotEmpty) {
-          await Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => GameScreen(
-                initialLevel: levels.first,
-                allLevels: levels,
-                audioService: widget.audioService,
-                saveProgressUseCase: widget.saveProgressUseCase,
-                tutorialService: _tutorialService,
-                initialTutorialMode: true,
-              ),
-            ),
-          );
-          return;
-        }
-      }
-
       await Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => LevelSelectScreen(
@@ -117,6 +97,7 @@ class _HomeScreenState extends State<HomeScreen> {
             saveProgressUseCase: widget.saveProgressUseCase,
             audioService: widget.audioService,
             tutorialService: _tutorialService,
+            autoStartTutorial: !completed,
           ),
         ),
       );
@@ -140,7 +121,7 @@ class _HomeScreenState extends State<HomeScreen> {
     try {
       final levels = await widget.getLevelsUseCase();
       if (!mounted || levels.isEmpty) return;
-      await Navigator.of(context).push(
+      final result = await Navigator.of(context).push<Object?>(
         MaterialPageRoute(
           builder: (_) => GameScreen(
             initialLevel: levels.first,
@@ -152,6 +133,19 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       );
+      if (!mounted) return;
+      if (result == GameScreen.backToLevelsResult) {
+        await Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => LevelSelectScreen(
+              getLevelsUseCase: widget.getLevelsUseCase,
+              saveProgressUseCase: widget.saveProgressUseCase,
+              audioService: widget.audioService,
+              tutorialService: _tutorialService,
+            ),
+          ),
+        );
+      }
     } catch (_) {
       _showErrorSnackBar('Unable to start tutorial. Please try again.');
     } finally {

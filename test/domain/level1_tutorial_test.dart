@@ -1,11 +1,40 @@
 import 'dart:io';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rush_out/core/network/network_info.dart';
 import 'package:rush_out/core/services/audio_service.dart';
 import 'package:rush_out/core/services/tutorial_service.dart';
 import 'package:rush_out/core/utils/level_parser.dart';
+import 'package:rush_out/data/datasources/level_asset_datasource.dart';
+import 'package:rush_out/data/datasources/supabase_remote_datasource.dart';
+import 'package:rush_out/data/repositories/daily_challenge_repository_impl.dart';
+import 'package:rush_out/data/repositories/leaderboard_repository_impl.dart';
+import 'package:rush_out/data/repositories/level_repository_impl.dart';
+import 'package:rush_out/domain/entities/level.dart';
 import 'package:rush_out/domain/solver/bfs_solver.dart';
+import 'package:rush_out/domain/usecases/get_leaderboard.dart';
+import 'package:rush_out/domain/usecases/get_levels.dart';
+import 'package:rush_out/domain/usecases/save_progress.dart';
+import 'package:rush_out/domain/usecases/submit_score.dart';
 import 'package:rush_out/presentation/bloc/game_cubit.dart';
+import 'package:rush_out/presentation/screens/game_screen.dart';
+import 'package:rush_out/presentation/screens/home_screen.dart';
+import 'package:rush_out/presentation/widgets/parking_board_widget.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../helpers/in_memory_local_database_datasource.dart';
+
+class _FakeAssetDataSource extends LevelAssetDataSource {
+  final List<Level> _levels;
+  _FakeAssetDataSource(this._levels);
+
+  @override
+  Future<List<Level>> loadBaseCampaignLevels() async => _levels;
+}
+
+class _FakeNetworkInfo implements NetworkInfo {
+  @override
+  Future<bool> get isConnected async => false;
+}
 
 void main() {
   group('Solver-Driven Level #1 Tutorial Tests', () {
@@ -50,6 +79,10 @@ void main() {
       );
 
       expect(cubit.state.isTutorialMode, isTrue);
+      expect(cubit.state.isLoadingTutorial, isTrue);
+      if (cubit.state.isLoadingTutorial) {
+        await cubit.stream.firstWhere((s) => !s.isLoadingTutorial);
+      }
       expect(cubit.state.tutorialSteps, expectedSolution);
       expect(cubit.state.tutorialStepIndex, 0);
 
@@ -121,6 +154,9 @@ void main() {
         tutorialService: tutorialService,
         isTutorialMode: true,
       );
+      if (cubit.state.isLoadingTutorial) {
+        await cubit.stream.firstWhere((s) => !s.isLoadingTutorial);
+      }
 
       final initialHints = cubit.state.remainingHints;
       await cubit.requestHint();
@@ -164,5 +200,262 @@ void main() {
 
       await cubit.close();
     });
+
+    List<Level> sampleCampaignLevels() {
+      const twoMoveBoard = 'oooCCo'
+          'oooBoo'
+          'AAoBoo'
+          'oooooo'
+          'oooooo'
+          'oooooo';
+      return const [
+        Level(
+          id: 1,
+          difficulty: Difficulty.easy,
+          optimalMoves: 2,
+          boardString: twoMoveBoard,
+          isUnlocked: true,
+        ),
+        Level(
+          id: 2,
+          difficulty: Difficulty.easy,
+          optimalMoves: 2,
+          boardString: twoMoveBoard,
+          isUnlocked: false,
+        ),
+        Level(
+          id: 3,
+          difficulty: Difficulty.easy,
+          optimalMoves: 2,
+          boardString: twoMoveBoard,
+          isUnlocked: false,
+        ),
+        Level(
+          id: 4,
+          difficulty: Difficulty.easy,
+          optimalMoves: 2,
+          boardString: twoMoveBoard,
+          isUnlocked: false,
+        ),
+      ];
+    }
+
+    Future<void> pumpFrames(WidgetTester tester, {int ms = 300}) async {
+      await tester.pump();
+      await tester.pump(Duration(milliseconds: ms));
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+
+    Future<void> pumpUntilFound(
+      WidgetTester tester,
+      Finder finder, {
+      int maxAttempts = 40,
+    }) async {
+      for (int i = 0; i < maxAttempts; i++) {
+        if (finder.evaluate().isNotEmpty) return;
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 25)),
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+    }
+
+    Future<void> dragVehicleByCells(
+      WidgetTester tester,
+      Finder finder, {
+      required int dxCells,
+      required int dyCells,
+    }) async {
+      final boardWidth = tester.getSize(find.byType(ParkingBoardWidget)).width;
+      final innerWidth = boardWidth * (1 - 0.09);
+      final cellSize = innerWidth / 6.0;
+      final center = tester.getCenter(finder);
+      final gesture = await tester.startGesture(center);
+      // Cross touch slop (18px) in the drag direction first
+      final slopDx = dxCells == 0 ? 0.0 : (dxCells > 0 ? 20.0 : -20.0);
+      final slopDy = dyCells == 0 ? 0.0 : (dyCells > 0 ? 20.0 : -20.0);
+      await gesture.moveBy(Offset(slopDx, slopDy));
+      await gesture.moveBy(
+        Offset(dxCells * cellSize - slopDx, dyCells * cellSize - slopDy),
+      );
+      await gesture.up();
+      await pumpFrames(tester, ms: 200);
+    }
+
+    Future<void> solveTwoMoveBoardAndOpenWinDialog(WidgetTester tester) async {
+      await dragVehicleByCells(tester, find.text('↕'), dxCells: 0, dyCells: 2);
+      await dragVehicleByCells(
+        tester,
+        find.text('↔').first,
+        dxCells: 4,
+        dyCells: 0,
+      );
+      // Wait for 520ms escape animation + WinDialog open
+      await tester.pump(const Duration(milliseconds: 650));
+      await pumpFrames(tester, ms: 300);
+    }
+
+    testWidgets(
+      'first-launch tutorial Back to Levels from WinDialog navigates to LevelSelectScreen instead of HomeScreen',
+      (tester) async {
+        final audio = AudioService(enablePlatformAudio: false);
+        final localDb = InMemoryLocalDatabaseDataSource();
+        final levels = sampleCampaignLevels();
+        final levelRepo = LevelRepositoryImpl(
+          assetDataSource: _FakeAssetDataSource(levels),
+          localDataSource: localDb,
+        );
+        final remoteDs = SupabaseRemoteDataSource();
+        final netInfo = _FakeNetworkInfo();
+        final tutorialService = TutorialService();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: HomeScreen(
+              audioService: audio,
+              tutorialService: tutorialService,
+              getLevelsUseCase: GetLevels(levelRepo),
+              saveProgressUseCase: SaveProgress(levelRepo),
+              dailyRepository: DailyChallengeRepositoryImpl(
+                remoteDataSource: remoteDs,
+                localDataSource: localDb,
+                networkInfo: netInfo,
+              ),
+              submitScoreUseCase: SubmitScore(
+                LeaderboardRepositoryImpl(
+                  remoteDataSource: remoteDs,
+                  networkInfo: netInfo,
+                ),
+              ),
+              getLeaderboardUseCase: GetLeaderboard(
+                LeaderboardRepositoryImpl(
+                  remoteDataSource: remoteDs,
+                  networkInfo: netInfo,
+                ),
+              ),
+            ),
+          ),
+        );
+
+        await tester.tap(find.text('PLAY CAMPAIGN'));
+        await pumpUntilFound(tester, find.text('Welcome to RushOut!'));
+
+        expect(find.text('Welcome to RushOut!'), findsOneWidget);
+        await tester.tap(find.text("Let's Drive!"));
+        await pumpFrames(tester, ms: 400);
+        await pumpUntilFound(tester, find.text('Step 1/2'));
+
+        await solveTwoMoveBoardAndOpenWinDialog(tester);
+        expect(find.text('TUTORIAL COMPLETE!'), findsOneWidget);
+
+        // Tap Back to Levels (grid icon)
+        await tester.tap(find.byIcon(Icons.grid_view_rounded));
+        await pumpUntilFound(tester, find.text('Select Level'));
+
+        // Must land on LevelSelectScreen, NOT HomeScreen!
+        expect(find.text('Select Level'), findsOneWidget);
+        expect(find.text('PLAY CAMPAIGN'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'replaying tutorial from Level #N returns to Level #N on Next instead of jumping to Level #2',
+      (tester) async {
+        final audio = AudioService(enablePlatformAudio: false);
+        final localDb = InMemoryLocalDatabaseDataSource();
+        final levels = sampleCampaignLevels();
+        final levelRepo = LevelRepositoryImpl(
+          assetDataSource: _FakeAssetDataSource(levels),
+          localDataSource: localDb,
+        );
+        final tutorialService = TutorialService();
+        await tutorialService.setTutorialCompleted(true);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: GameScreen(
+              initialLevel: levels[2].copyWith(isUnlocked: true), // Level #3
+              allLevels: levels,
+              audioService: audio,
+              saveProgressUseCase: SaveProgress(levelRepo),
+              tutorialService: tutorialService,
+            ),
+          ),
+        );
+        await pumpFrames(tester, ms: 300);
+
+        expect(find.text('Level #3'), findsOneWidget);
+
+        // Open How to Play (?) and tap Tutorial
+        await tester.tap(find.byIcon(Icons.help_outline_rounded));
+        await pumpFrames(tester, ms: 300);
+        await tester.tap(find.text('Tutorial'));
+        await pumpUntilFound(tester, find.text('Step 1/2'));
+
+        expect(find.text('Level #1'), findsOneWidget);
+
+        await solveTwoMoveBoardAndOpenWinDialog(tester);
+        expect(find.text('TUTORIAL COMPLETE!'), findsOneWidget);
+
+        // Tap Next -> must return to Level #3, NOT jump to Level #2
+        await tester.tap(find.text('Next'));
+        await pumpUntilFound(tester, find.text('Level #3'));
+
+        expect(find.text('Level #3'), findsOneWidget);
+        expect(find.text('Level #2'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'Skip Level is locked at 0 moves and unlocks next level with isUnlocked == true after minimum moves',
+      (tester) async {
+        final audio = AudioService(enablePlatformAudio: false);
+        final localDb = InMemoryLocalDatabaseDataSource();
+        final levels = sampleCampaignLevels();
+        final levelRepo = LevelRepositoryImpl(
+          assetDataSource: _FakeAssetDataSource(levels),
+          localDataSource: localDb,
+        );
+        final tutorialService = TutorialService();
+        await tutorialService.setTutorialCompleted(true);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: GameScreen(
+              initialLevel: levels[0], // Level #1, 0 moves
+              allLevels: levels,
+              audioService: audio,
+              saveProgressUseCase: SaveProgress(levelRepo),
+              tutorialService: tutorialService,
+            ),
+          ),
+        );
+        await pumpFrames(tester, ms: 300);
+
+        // At 0 moves, tapping Skip must NOT open the Skip confirmation dialog
+        await tester.tap(find.byIcon(Icons.skip_next_rounded));
+        await pumpFrames(tester, ms: 300);
+        expect(find.text('Skip Level #1?'), findsNothing);
+        expect(find.text('Level #1'), findsOneWidget);
+
+        // Make 2 non-winning moves to unlock Skip (requiredMovesToSkip == 2 for optimalMoves 2)
+        await dragVehicleByCells(tester, find.text('↕'), dxCells: 0, dyCells: 2);
+        await dragVehicleByCells(tester, find.text('↕'), dxCells: 0, dyCells: -2);
+
+        await tester.tap(find.byIcon(Icons.skip_next_rounded));
+        await pumpFrames(tester, ms: 300);
+        expect(find.text('Skip Level #1?'), findsOneWidget);
+
+        await tester.tap(find.text('Skip Level'));
+        await pumpFrames(tester, ms: 300);
+
+        // Now on Level #2 and its persisted/state level has isUnlocked == true
+        expect(find.text('Level #2'), findsOneWidget);
+        final row1 = await localDb.getLevelProgress(1);
+        final row2 = await localDb.getLevelProgress(2);
+        expect(row1?['is_skipped'], 1);
+        expect(row2?['is_unlocked'], 1);
+      },
+    );
   });
 }

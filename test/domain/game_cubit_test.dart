@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rush_out/core/services/audio_service.dart';
 import 'package:rush_out/data/datasources/level_asset_datasource.dart';
 import 'package:rush_out/data/repositories/level_repository_impl.dart';
 import 'package:rush_out/domain/entities/leaderboard_entry.dart';
 import 'package:rush_out/domain/entities/level.dart';
+import 'package:rush_out/domain/entities/move.dart';
 import 'package:rush_out/domain/repositories/daily_challenge_repository.dart';
 import 'package:rush_out/domain/repositories/leaderboard_repository.dart';
 import 'package:rush_out/domain/usecases/save_progress.dart';
@@ -42,6 +44,17 @@ class _StubLeaderboardRepo implements LeaderboardRepository {
     required String challengeDate,
     required int movesCount,
   }) async {}
+}
+
+class _DelayedReadInMemoryDb extends InMemoryLocalDatabaseDataSource {
+  final Duration readDelay;
+  _DelayedReadInMemoryDb(this.readDelay);
+
+  @override
+  Future<Map<String, dynamic>?> getInProgressLevel(int levelId) async {
+    await Future<void>.delayed(readDelay);
+    return super.getInProgressLevel(levelId);
+  }
 }
 
 void main() {
@@ -261,6 +274,83 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 20));
       expect(session4.state.remainingHints, 4);
       await session4.close();
+    });
+
+    test('serializes undo() -> reset() without leaving stale board and rejects late restore or incompatible board', () async {
+      final delayedDb = _DelayedReadInMemoryDb(const Duration(milliseconds: 35));
+      final repo = LevelRepositoryImpl(
+        assetDataSource: LevelAssetDataSource(),
+        localDataSource: delayedDb,
+      );
+
+      // 1. Seed valid in-progress state for level 1, then hit reset() before slow restore returns
+      await repo.saveInProgressLevel(
+        const InProgressLevelState(
+          levelId: 1,
+          boardString: 'oooooo'
+              'oooooo'
+              'AAoooo'
+              'oooBoo'
+              'oooBoo'
+              'oooooo',
+          moveCount: 1,
+          moveHistory: [
+            Move(vehicleId: 'B', fromRow: 1, fromCol: 3, toRow: 3, toCol: 3),
+          ],
+        ),
+      );
+
+      final cubitReset = GameCubit(
+        level: sampleLevel,
+        audioService: AudioService(enablePlatformAudio: false),
+        saveProgressUseCase: SaveProgress(repo),
+      );
+      // Player hits reset immediately before async restore completes
+      cubitReset.reset();
+      await Future<void>.delayed(const Duration(milliseconds: 70));
+
+      expect(cubitReset.state.boardState.moveCount, 0);
+      expect(cubitReset.state.boardState.getVehicleById('B')!.row, 1);
+      expect(await delayedDb.getInProgressLevel(1), isNull);
+
+      // 2. Make 2 moves, then rapidly call undo() followed immediately by reset()
+      await cubitReset.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
+      await cubitReset.onVehicleDragEnd('A', draggedRow: 2.0, draggedCol: 1.0);
+      expect(cubitReset.state.boardState.moveCount, 2);
+
+      cubitReset.undo();
+      cubitReset.reset();
+      await Future<void>.delayed(const Duration(milliseconds: 70));
+
+      expect(cubitReset.state.boardState.moveCount, 0);
+      expect(await delayedDb.getInProgressLevel(1), isNull);
+      await cubitReset.close();
+
+      // 3. Incompatible saved board (has vehicle C instead of B) must be ignored and cleared
+      await delayedDb.saveInProgressLevel(
+        levelId: 1,
+        boardString: 'CCoooo'
+            'oooooo'
+            'AAoooo'
+            'oooooo'
+            'oooooo'
+            'oooooo',
+        moveCount: 3,
+        moveHistoryJson: jsonEncode(const []),
+      );
+
+      final cubitIncompatible = GameCubit(
+        level: sampleLevel,
+        audioService: AudioService(enablePlatformAudio: false),
+        saveProgressUseCase: SaveProgress(repo),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 70));
+
+      expect(cubitIncompatible.state.boardState.moveCount, 0);
+      expect(cubitIncompatible.state.boardState.getVehicleById('B'), isNotNull);
+      expect(cubitIncompatible.state.boardState.getVehicleById('C'), isNull);
+      expect(await delayedDb.getInProgressLevel(1), isNull);
+      await cubitIncompatible.close();
     });
   });
 }

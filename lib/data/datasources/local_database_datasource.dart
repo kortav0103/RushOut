@@ -15,11 +15,12 @@ typedef DatabaseOpener = Future<Database> Function(
 
 class LocalDatabaseDataSource {
   static const String _dbName = 'rush_out.db';
-  static const int _dbVersion = 3;
+  static const int _dbVersion = 4;
 
   static const String tableLevelProgress = 'level_progress';
   static const String tableDailyCache = 'daily_cache';
   static const String tableAppWallet = 'app_wallet';
+  static const String tableInProgressLevels = 'in_progress_levels';
   static const String hintBalanceKey = 'remaining_hints';
 
   final DatabasesPathProvider _getDatabasesPath;
@@ -29,6 +30,7 @@ class LocalDatabaseDataSource {
   Database? _database;
   Future<Database>? _openingDatabase;
   Future<void> _walletQueue = Future<void>.value();
+  final Map<int, Future<void>> _inProgressQueues = {};
 
   LocalDatabaseDataSource({
     DatabasesPathProvider? getDatabasesPathFn,
@@ -75,6 +77,7 @@ class LocalDatabaseDataSource {
               best_moves INTEGER,
               stars INTEGER,
               is_unlocked INTEGER,
+              is_skipped INTEGER NOT NULL DEFAULT 0,
               updated_at TEXT
             )
           ''');
@@ -92,6 +95,15 @@ class LocalDatabaseDataSource {
             CREATE TABLE $tableAppWallet (
               wallet_key TEXT PRIMARY KEY,
               int_value INTEGER NOT NULL
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE $tableInProgressLevels (
+              level_id INTEGER PRIMARY KEY,
+              board_string TEXT NOT NULL,
+              move_count INTEGER NOT NULL,
+              move_history TEXT NOT NULL,
+              updated_at TEXT
             )
           ''');
         },
@@ -115,6 +127,23 @@ class LocalDatabaseDataSource {
               CREATE TABLE IF NOT EXISTS $tableAppWallet (
                 wallet_key TEXT PRIMARY KEY,
                 int_value INTEGER NOT NULL
+              )
+            ''');
+          }
+          if (oldVersion < 4) {
+            await _addColumnIfMissing(
+              db,
+              table: tableLevelProgress,
+              column: 'is_skipped',
+              definition: 'INTEGER NOT NULL DEFAULT 0',
+            );
+            await db.execute('''
+              CREATE TABLE IF NOT EXISTS $tableInProgressLevels (
+                level_id INTEGER PRIMARY KEY,
+                board_string TEXT NOT NULL,
+                move_count INTEGER NOT NULL,
+                move_history TEXT NOT NULL,
+                updated_at TEXT
               )
             ''');
           }
@@ -179,6 +208,7 @@ class LocalDatabaseDataSource {
     int? bestMoves,
     required int stars,
     required bool isUnlocked,
+    bool isSkipped = false,
   }) async {
     final data = <String, dynamic>{
       'level_id': levelId,
@@ -186,6 +216,7 @@ class LocalDatabaseDataSource {
       'best_moves': bestMoves,
       'stars': stars,
       'is_unlocked': isUnlocked ? 1 : 0,
+      'is_skipped': isSkipped ? 1 : 0,
       'updated_at': DateTime.now().toUtc().toIso8601String(),
     };
 
@@ -199,6 +230,89 @@ class LocalDatabaseDataSource {
     } catch (e) {
       throw CacheException('Failed to save progress for level $levelId: $e');
     }
+  }
+
+  Future<T> _enqueueInProgressOp<T>(int levelId, Future<T> Function() action) {
+    final prev = _inProgressQueues[levelId] ?? Future<void>.value();
+    final completer = Completer<T>();
+    final next = prev.then((_) async {
+      try {
+        completer.complete(await action());
+      } catch (e, st) {
+        completer.completeError(e, st);
+      }
+    });
+    _inProgressQueues[levelId] = next.whenComplete(() {
+      if (identical(_inProgressQueues[levelId], next)) {
+        _inProgressQueues.remove(levelId);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<Map<String, dynamic>?> getInProgressLevel(int levelId) {
+    return _enqueueInProgressOp(levelId, () async {
+      final db = await database;
+      try {
+        final rows = await db.query(
+          tableInProgressLevels,
+          where: 'level_id = ?',
+          whereArgs: [levelId],
+          limit: 1,
+        );
+        if (rows.isEmpty) return null;
+        return Map<String, dynamic>.from(rows.first);
+      } catch (e) {
+        throw CacheException(
+          'Failed to read in-progress state for level $levelId: $e',
+        );
+      }
+    });
+  }
+
+  Future<void> saveInProgressLevel({
+    required int levelId,
+    required String boardString,
+    required int moveCount,
+    required String moveHistoryJson,
+  }) {
+    return _enqueueInProgressOp(levelId, () async {
+      final db = await database;
+      try {
+        await db.insert(
+          tableInProgressLevels,
+          {
+            'level_id': levelId,
+            'board_string': boardString,
+            'move_count': moveCount,
+            'move_history': moveHistoryJson,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      } catch (e) {
+        throw CacheException(
+          'Failed to save in-progress state for level $levelId: $e',
+        );
+      }
+    });
+  }
+
+  Future<void> clearInProgressLevel(int levelId) {
+    return _enqueueInProgressOp(levelId, () async {
+      final db = await database;
+      try {
+        await db.delete(
+          tableInProgressLevels,
+          where: 'level_id = ?',
+          whereArgs: [levelId],
+        );
+      } catch (e) {
+        throw CacheException(
+          'Failed to clear in-progress state for level $levelId: $e',
+        );
+      }
+    });
   }
 
   Future<DailyChallengeModel?> getCachedDailyChallenge(String dateKey) async {

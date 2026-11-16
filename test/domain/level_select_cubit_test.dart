@@ -1,10 +1,12 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rush_out/data/datasources/level_asset_datasource.dart';
+import 'package:rush_out/data/datasources/local_database_datasource.dart';
 import 'package:rush_out/data/repositories/level_repository_impl.dart';
 import 'package:rush_out/domain/entities/level.dart';
 import 'package:rush_out/domain/repositories/level_repository.dart';
 import 'package:rush_out/domain/usecases/get_levels.dart';
 import 'package:rush_out/presentation/bloc/level_select_cubit.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../helpers/in_memory_local_database_datasource.dart';
 
 class _FakeLevelRepository implements LevelRepository {
@@ -33,6 +35,19 @@ class _FakeLevelRepository implements LevelRepository {
 
   @override
   Future<int> updateRemainingHints(int delta) async => 3 + delta;
+
+  @override
+  Future<InProgressLevelState?> getInProgressLevel(
+    int levelId, {
+    String? expectedBoardString,
+  }) async =>
+      null;
+
+  @override
+  Future<void> saveInProgressLevel(InProgressLevelState state) async {}
+
+  @override
+  Future<void> clearInProgressLevel(int levelId) async {}
 }
 
 class _FakeAssetDataSource extends LevelAssetDataSource {
@@ -132,6 +147,61 @@ void main() {
       final afterSkip = await repo.getLevels();
       expect(afterSkip[2].stars, 0);
       expect(afterSkip.map((l) => l.isUnlocked).toList(), [true, true, true, true]);
+    });
+
+    test('skipLevel persists explicit is_skipped column in SQLite and enforces active skip cap', () async {
+      sqfliteFfiInit();
+      final localDb = LocalDatabaseDataSource(
+        getDatabasesPathFn: () async => inMemoryDatabasePath,
+        openDatabaseFn: (
+          path, {
+          version,
+          onCreate,
+          onUpgrade,
+        }) {
+          return databaseFactoryFfi.openDatabase(
+            path,
+            options: OpenDatabaseOptions(
+              version: version,
+              onCreate: onCreate,
+              onUpgrade: onUpgrade,
+              singleInstance: false,
+            ),
+          );
+        },
+      );
+
+      final base = [
+        _sampleLevel(1, 5),
+        _sampleLevel(2, 6),
+        _sampleLevel(3, 7),
+        _sampleLevel(4, 8),
+        _sampleLevel(5, 9),
+      ];
+      final repo = LevelRepositoryImpl(
+        assetDataSource: _FakeAssetDataSource(base),
+        localDataSource: localDb,
+      );
+
+      // Skip 1, 2, 3 -> allowed up to cap (3)
+      await repo.skipLevel(levelId: 1, difficulty: Difficulty.easy);
+      final row1 = await localDb.getLevelProgress(1);
+      expect(row1, isNotNull);
+      expect(row1!['is_skipped'], 1);
+
+      await repo.skipLevel(levelId: 2, difficulty: Difficulty.easy);
+      await repo.skipLevel(levelId: 3, difficulty: Difficulty.easy);
+
+      // Skipping a 4th consecutive level without solving any skipped level must be rejected
+      await expectLater(
+        repo.skipLevel(levelId: 4, difficulty: Difficulty.easy),
+        throwsStateError,
+      );
+
+      final levelsAfter3Skips = await repo.getLevels();
+      expect(levelsAfter3Skips[4].isUnlocked, isFalse);
+
+      await localDb.close();
     });
   });
 }

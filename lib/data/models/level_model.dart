@@ -10,6 +10,7 @@ class LevelModel extends Level {
     super.bestMoves,
     super.stars = 0,
     super.isUnlocked = false,
+    super.isSkipped = false,
   });
 
   factory LevelModel.fromEntity(Level level) {
@@ -22,6 +23,7 @@ class LevelModel extends Level {
       bestMoves: level.bestMoves,
       stars: level.stars,
       isUnlocked: level.isUnlocked,
+      isSkipped: level.isSkipped,
     );
   }
 
@@ -32,6 +34,10 @@ class LevelModel extends Level {
     if (progressRow == null) {
       return LevelModel.fromEntity(baseLevel);
     }
+    final stars = (progressRow['stars'] as int?) ?? 0;
+    final rawSkipped =
+        ((progressRow['is_skipped'] as int?) ?? (baseLevel.isSkipped ? 1 : 0)) ==
+            1;
     return LevelModel(
       id: baseLevel.id,
       difficulty: baseLevel.difficulty,
@@ -39,10 +45,11 @@ class LevelModel extends Level {
       boardString: baseLevel.boardString,
       clusterSize: baseLevel.clusterSize,
       bestMoves: progressRow['best_moves'] as int?,
-      stars: (progressRow['stars'] as int?) ?? 0,
+      stars: stars,
       isUnlocked:
           ((progressRow['is_unlocked'] as int?) ?? (baseLevel.isUnlocked ? 1 : 0)) ==
               1,
+      isSkipped: stars == 0 && rawSkipped,
     );
   }
 
@@ -53,6 +60,7 @@ class LevelModel extends Level {
       'best_moves': bestMoves,
       'stars': stars,
       'is_unlocked': isUnlocked ? 1 : 0,
+      'is_skipped': isSkipped ? 1 : 0,
     };
   }
 }

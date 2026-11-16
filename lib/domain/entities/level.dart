@@ -1,5 +1,6 @@
 import 'package:equatable/equatable.dart';
 import '../../core/constants/app_constants.dart';
+import 'move.dart';
 
 enum Difficulty {
   easy,
@@ -78,6 +79,7 @@ class Level extends Equatable {
   final int? bestMoves;
   final int stars;
   final bool isUnlocked;
+  final bool isSkipped;
 
   const Level({
     required this.id,
@@ -88,6 +90,7 @@ class Level extends Equatable {
     this.bestMoves,
     this.stars = 0,
     this.isUnlocked = false,
+    this.isSkipped = false,
   });
 
   Level copyWith({
@@ -99,6 +102,7 @@ class Level extends Equatable {
     int? bestMoves,
     int? stars,
     bool? isUnlocked,
+    bool? isSkipped,
   }) {
     return Level(
       id: id ?? this.id,
@@ -109,6 +113,7 @@ class Level extends Equatable {
       bestMoves: bestMoves ?? this.bestMoves,
       stars: stars ?? this.stars,
       isUnlocked: isUnlocked ?? this.isUnlocked,
+      isSkipped: isSkipped ?? this.isSkipped,
     );
   }
 
@@ -122,5 +127,23 @@ class Level extends Equatable {
         bestMoves,
         stars,
         isUnlocked,
+        isSkipped,
       ];
+}
+
+class InProgressLevelState extends Equatable {
+  final int levelId;
+  final String boardString;
+  final int moveCount;
+  final List<Move> moveHistory;
+
+  const InProgressLevelState({
+    required this.levelId,
+    required this.boardString,
+    required this.moveCount,
+    this.moveHistory = const [],
+  });
+
+  @override
+  List<Object?> get props => [levelId, boardString, moveCount, moveHistory];
 }

@@ -1,9 +1,8 @@
-import 'dart:convert';
+import 'dart:async';
 import 'dart:isolate';
 import 'dart:math' as math;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/services/audio_service.dart';
 import '../../core/services/tutorial_service.dart';
@@ -18,7 +17,10 @@ import '../../domain/solver/bfs_solver.dart';
 import '../../domain/usecases/save_progress.dart';
 
 class GameState extends Equatable {
+  static const int maxActiveSkippedLevels = 3;
+
   final Level level;
+  final List<Level> campaignLevels;
   final String initialBoardString;
   final BoardState boardState;
   final Move? activeHint;
@@ -28,11 +30,14 @@ class GameState extends Equatable {
   final int earnedStars;
   final bool isMuted;
   final bool isTutorialMode;
+  final bool isLoadingTutorial;
   final List<Move> tutorialSteps;
   final int tutorialStepIndex;
+  final Level? tutorialReturnLevel;
 
   const GameState({
     required this.level,
+    this.campaignLevels = const [],
     required this.initialBoardString,
     required this.boardState,
     this.activeHint,
@@ -42,16 +47,66 @@ class GameState extends Equatable {
     this.earnedStars = 0,
     this.isMuted = false,
     this.isTutorialMode = false,
+    this.isLoadingTutorial = false,
     this.tutorialSteps = const [],
     this.tutorialStepIndex = 0,
+    this.tutorialReturnLevel,
   });
 
   bool get canUndo => boardState.canUndo && !isWon && !isTutorialMode;
-  bool get canReset => boardState.moveCount > 0 && !isWon;
+  bool get canReset =>
+      boardState.moveCount > 0 && !isWon && !isLoadingTutorial;
   bool get canHint =>
       !isWon && !isComputingHint && !isTutorialMode && remainingHints > 0;
 
+  bool get isTutorialReplay => isTutorialMode && tutorialReturnLevel != null;
+
+  int get activeSkippedCount =>
+      campaignLevels.where((l) => l.isSkipped && l.stars == 0).length;
+
+  Level? get nextLevel {
+    if (campaignLevels.isEmpty) return null;
+    final idx = campaignLevels.indexWhere((l) => l.id == level.id);
+    if (idx >= 0 && idx + 1 < campaignLevels.length) {
+      return campaignLevels[idx + 1];
+    }
+    for (final candidate in campaignLevels) {
+      if (candidate.id == level.id + 1) return candidate;
+    }
+    return null;
+  }
+
+  bool get hasNextLevel => isTutorialReplay || nextLevel != null;
+
+  int get requiredMovesToSkip => math.min(5, math.max(2, level.optimalMoves));
+
+  int get movesRemainingToUnlockSkip =>
+      math.max(0, requiredMovesToSkip - boardState.moveCount);
+
+  bool get canShowSkipButton =>
+      !isTutorialMode &&
+      !isWon &&
+      nextLevel != null &&
+      level.stars == 0 &&
+      !level.isSkipped;
+
+  bool get isSkipQuotaReached => activeSkippedCount >= maxActiveSkippedLevels;
+
+  bool get canSkipLevel =>
+      canShowSkipButton &&
+      boardState.moveCount >= requiredMovesToSkip &&
+      !isSkipQuotaReached;
+
+  String? get skipLockedReason {
+    if (!canShowSkipButton || canSkipLevel) return null;
+    if (isSkipQuotaReached) {
+      return 'Skip limit reached ($maxActiveSkippedLevels/$maxActiveSkippedLevels). Clear a skipped level first!';
+    }
+    return 'Try $movesRemainingToUnlockSkip more ${movesRemainingToUnlockSkip == 1 ? 'move' : 'moves'} to unlock Skip!';
+  }
+
   Move? get currentTutorialMove => (isTutorialMode &&
+          !isLoadingTutorial &&
           !isWon &&
           tutorialStepIndex >= 0 &&
           tutorialStepIndex < tutorialSteps.length)
@@ -101,6 +156,7 @@ class GameState extends Equatable {
 
   GameState copyWith({
     Level? level,
+    List<Level>? campaignLevels,
     String? initialBoardString,
     BoardState? boardState,
     Move? activeHint,
@@ -111,11 +167,15 @@ class GameState extends Equatable {
     int? earnedStars,
     bool? isMuted,
     bool? isTutorialMode,
+    bool? isLoadingTutorial,
     List<Move>? tutorialSteps,
     int? tutorialStepIndex,
+    Level? tutorialReturnLevel,
+    bool clearTutorialReturnLevel = false,
   }) {
     return GameState(
       level: level ?? this.level,
+      campaignLevels: campaignLevels ?? this.campaignLevels,
       initialBoardString: initialBoardString ?? this.initialBoardString,
       boardState: boardState ?? this.boardState,
       activeHint: clearHint ? null : (activeHint ?? this.activeHint),
@@ -125,14 +185,19 @@ class GameState extends Equatable {
       earnedStars: earnedStars ?? this.earnedStars,
       isMuted: isMuted ?? this.isMuted,
       isTutorialMode: isTutorialMode ?? this.isTutorialMode,
+      isLoadingTutorial: isLoadingTutorial ?? this.isLoadingTutorial,
       tutorialSteps: tutorialSteps ?? this.tutorialSteps,
       tutorialStepIndex: tutorialStepIndex ?? this.tutorialStepIndex,
+      tutorialReturnLevel: clearTutorialReturnLevel
+          ? null
+          : (tutorialReturnLevel ?? this.tutorialReturnLevel),
     );
   }
 
   @override
   List<Object?> get props => [
         level,
+        campaignLevels,
         initialBoardString,
         boardState,
         activeHint,
@@ -142,42 +207,57 @@ class GameState extends Equatable {
         earnedStars,
         isMuted,
         isTutorialMode,
+        isLoadingTutorial,
         tutorialSteps,
         tutorialStepIndex,
+        tutorialReturnLevel,
       ];
 }
 
 class GameCubit extends Cubit<GameState> {
-  static const String _inProgressPrefix = 'rush_out_in_progress_level_';
-
   final SaveProgress? saveProgressUseCase;
   final LevelRepository? levelRepository;
   final AudioService audioService;
   final TutorialService? tutorialService;
   final Future<Move?> Function(BoardState board)? hintSolver;
+  final Future<List<Move>?> Function(BoardState board)? tutorialSolver;
 
   int _hintRequestId = 0;
+  int _tutorialRequestId = 0;
+  int _boardEpoch = 0;
   bool _hintsMutatedLocally = false;
+  Future<void> _persistenceQueue = Future<void>.value();
 
   GameCubit({
     required Level level,
+    List<Level> initialLevels = const [],
     required this.audioService,
     this.saveProgressUseCase,
     LevelRepository? levelRepository,
     this.tutorialService,
     this.hintSolver,
+    this.tutorialSolver,
     bool isTutorialMode = false,
+    Level? tutorialReturnLevel,
   })  : levelRepository = levelRepository ?? saveProgressUseCase?.repository,
         super(
           _createInitialState(
             level: level,
+            initialLevels: initialLevels,
             audioService: audioService,
             isTutorialMode: isTutorialMode,
+            tutorialReturnLevel: tutorialReturnLevel,
           ),
         ) {
     _loadRemainingHints();
-    if (!isTutorialMode) {
-      _restoreInProgressState(level);
+    if (isTutorialMode) {
+      _solveTutorialSteps(
+        state.boardState,
+        levelId: level.id,
+        epoch: _boardEpoch,
+      );
+    } else {
+      _restoreInProgressState(level, expectedEpoch: _boardEpoch);
     }
   }
 
@@ -218,148 +298,302 @@ class GameCubit extends Cubit<GameState> {
 
   static GameState _createInitialState({
     required Level level,
+    required List<Level> initialLevels,
     required AudioService audioService,
     required bool isTutorialMode,
+    Level? tutorialReturnLevel,
   }) {
     final initialBoard = _safeParseBoard(
       level.boardString,
       level.optimalMoves,
     );
-    if (!isTutorialMode) {
-      return GameState(
-        level: level,
-        initialBoardString: level.boardString,
-        boardState: initialBoard,
-        isMuted: audioService.isMuted,
-      );
-    }
-
-    final solution = BfsSolver.solve(initialBoard) ?? const <Move>[];
+    final immutableLevels = initialLevels.isEmpty
+        ? const <Level>[]
+        : List<Level>.unmodifiable(initialLevels);
     return GameState(
       level: level,
+      campaignLevels: immutableLevels,
       initialBoardString: level.boardString,
       boardState: initialBoard,
-      activeHint: solution.isNotEmpty ? solution.first : null,
       isMuted: audioService.isMuted,
-      isTutorialMode: true,
-      tutorialSteps: solution,
+      isTutorialMode: isTutorialMode,
+      isLoadingTutorial: isTutorialMode,
+      tutorialSteps: const <Move>[],
       tutorialStepIndex: 0,
+      tutorialReturnLevel: isTutorialMode ? tutorialReturnLevel : null,
     );
   }
 
-  Future<void> _restoreInProgressState(Level level) async {
-    if (level.id <= 0) return;
+  Future<void> _solveTutorialSteps(
+    BoardState initialBoard, {
+    required int levelId,
+    required int epoch,
+  }) async {
+    final requestId = ++_tutorialRequestId;
+    List<Move>? solution;
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final raw = prefs.getString('$_inProgressPrefix${level.id}');
-      if (raw == null ||
-          isClosed ||
+      solution = await (tutorialSolver != null
+          ? tutorialSolver!(initialBoard)
+          : Isolate.run(() => BfsSolver.solve(initialBoard)));
+    } catch (_) {
+      solution = const <Move>[];
+    }
+
+    if (isClosed ||
+        _tutorialRequestId != requestId ||
+        _boardEpoch != epoch ||
+        !state.isTutorialMode ||
+        state.level.id != levelId) {
+      return;
+    }
+
+    final steps = solution ?? const <Move>[];
+    emit(
+      state.copyWith(
+        isLoadingTutorial: false,
+        tutorialSteps: steps,
+        tutorialStepIndex: 0,
+        activeHint: steps.isNotEmpty ? steps.first : null,
+        clearHint: steps.isEmpty,
+      ),
+    );
+  }
+
+  Future<void> _enqueuePersistence(Future<void> Function() action) {
+    final next = _persistenceQueue.then((_) => action()).catchError((_) {});
+    _persistenceQueue = next;
+    return next;
+  }
+
+  Future<void> _restoreInProgressState(
+    Level level, {
+    required int expectedEpoch,
+  }) {
+    final repo = levelRepository;
+    if (repo == null || level.id <= 0) return Future<void>.value();
+    return _enqueuePersistence(() async {
+      if (isClosed ||
+          _boardEpoch != expectedEpoch ||
+          state.isTutorialMode ||
           state.level.id != level.id ||
           state.isWon ||
           state.boardState.moveCount > 0) {
         return;
       }
 
-      final decoded = jsonDecode(raw) as Map<String, dynamic>;
-      final savedBoard = decoded['boardString'] as String?;
-      final savedMoves = decoded['moveCount'] as int?;
-      if (savedBoard == null || savedMoves == null || savedMoves <= 0) return;
-
-      final rawHistory = decoded['moveHistory'];
-      final List<Move> restoredHistory = [];
-      if (rawHistory is List) {
-        for (final item in rawHistory) {
-          if (item is Map<String, dynamic>) {
-            restoredHistory.add(Move.fromJson(item));
-          } else if (item is Map) {
-            restoredHistory.add(Move.fromJson(Map<String, dynamic>.from(item)));
-          }
+      try {
+        final saved = await repo.getInProgressLevel(
+          level.id,
+          expectedBoardString: level.boardString,
+        );
+        if (saved == null ||
+            isClosed ||
+            _boardEpoch != expectedEpoch ||
+            state.isTutorialMode ||
+            state.level.id != level.id ||
+            state.isWon ||
+            state.boardState.moveCount > 0) {
+          return;
         }
+
+        final restored = LevelParser.parseToBoardState(
+          saved.boardString,
+          optimalMoves: level.optimalMoves,
+        ).copyWith(
+          moveCount: saved.moveCount,
+          moveHistory: saved.moveHistory,
+        );
+
+        if (!restored.isWon && !isClosed) {
+          emit(state.copyWith(boardState: restored, clearHint: true));
+        }
+      } catch (_) {}
+    });
+  }
+
+  Future<void> _saveInProgressState(
+    int levelId,
+    BoardState board, {
+    required int expectedEpoch,
+  }) {
+    final repo = levelRepository;
+    if (repo == null || levelId <= 0) return Future<void>.value();
+    return _enqueuePersistence(() async {
+      if (_boardEpoch != expectedEpoch) return;
+      if (board.moveCount <= 0) {
+        await repo.clearInProgressLevel(levelId);
+      } else {
+        await repo.saveInProgressLevel(
+          InProgressLevelState(
+            levelId: levelId,
+            boardString: board.toBoardString(),
+            moveCount: board.moveCount,
+            moveHistory: board.moveHistory,
+          ),
+        );
       }
+    });
+  }
 
-      final restored = LevelParser.parseToBoardState(
-        savedBoard,
-        optimalMoves: level.optimalMoves,
-      ).copyWith(
-        moveCount: savedMoves,
-        moveHistory: restoredHistory,
-      );
+  Future<void> _clearInProgressState(int levelId) {
+    final repo = levelRepository;
+    if (repo == null || levelId <= 0) return Future<void>.value();
+    return _enqueuePersistence(() => repo.clearInProgressLevel(levelId));
+  }
 
-      if (!restored.isWon && !isClosed) {
-        emit(state.copyWith(boardState: restored, clearHint: true));
+  List<Level> _withUpdatedCampaignProgress(
+    List<Level> levels, {
+    required Level updatedLevel,
+    bool unlockNext = true,
+  }) {
+    if (levels.isEmpty) return levels;
+    bool unlockFollowing = false;
+    final List<Level> updated = [];
+    for (int i = 0; i < levels.length; i++) {
+      final item = levels[i];
+      if (item.id == updatedLevel.id) {
+        updated.add(updatedLevel);
+        if (unlockNext && i + 1 < levels.length) {
+          unlockFollowing = true;
+        }
+      } else if (unlockFollowing) {
+        updated.add(item.isUnlocked ? item : item.copyWith(isUnlocked: true));
+        unlockFollowing = false;
+      } else if (unlockNext &&
+          item.id == updatedLevel.id + 1 &&
+          !item.isUnlocked) {
+        updated.add(item.copyWith(isUnlocked: true));
+      } else {
+        updated.add(item);
       }
-    } catch (_) {}
+    }
+    return List<Level>.unmodifiable(updated);
   }
 
-  Future<void> _saveInProgressState(int levelId, BoardState board) async {
-    if (levelId <= 0) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(
-        '$_inProgressPrefix$levelId',
-        jsonEncode({
-          'boardString': board.toBoardString(),
-          'moveCount': board.moveCount,
-          'moveHistory': board.moveHistory.map((m) => m.toJson()).toList(),
-        }),
-      );
-    } catch (_) {}
-  }
-
-  Future<void> _clearInProgressState(int levelId) async {
-    if (levelId <= 0) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('$_inProgressPrefix$levelId');
-    } catch (_) {}
-  }
-
-  void loadLevel(Level newLevel, {bool isTutorialMode = false}) {
+  void loadLevel(
+    Level newLevel, {
+    bool isTutorialMode = false,
+    Level? tutorialReturnLevel,
+  }) {
+    _boardEpoch++;
     _hintRequestId++;
+    _tutorialRequestId++;
     final parsedState = _safeParseBoard(
       newLevel.boardString,
       newLevel.optimalMoves,
     );
-    final solution = isTutorialMode
-        ? (BfsSolver.solve(parsedState) ?? const <Move>[])
-        : const <Move>[];
     emit(
       GameState(
         level: newLevel,
+        campaignLevels: state.campaignLevels,
         initialBoardString: newLevel.boardString,
         boardState: parsedState,
-        activeHint: solution.isNotEmpty ? solution.first : null,
         remainingHints: state.remainingHints,
         isMuted: audioService.isMuted,
         isTutorialMode: isTutorialMode,
-        tutorialSteps: solution,
+        isLoadingTutorial: isTutorialMode,
+        tutorialSteps: const <Move>[],
         tutorialStepIndex: 0,
+        tutorialReturnLevel: isTutorialMode ? tutorialReturnLevel : null,
       ),
     );
-    if (!isTutorialMode) {
-      _restoreInProgressState(newLevel);
+    if (isTutorialMode) {
+      _solveTutorialSteps(
+        parsedState,
+        levelId: newLevel.id,
+        epoch: _boardEpoch,
+      );
+    } else {
+      _restoreInProgressState(newLevel, expectedEpoch: _boardEpoch);
     }
   }
 
-  void startTutorial({Level? level}) {
-    loadLevel(level ?? state.level, isTutorialMode: true);
+  void startTutorial({Level? level, Level? returnToLevel}) {
+    loadLevel(
+      level ?? state.level,
+      isTutorialMode: true,
+      tutorialReturnLevel: returnToLevel,
+    );
+  }
+
+  void replayTutorial() {
+    final tutorialLevel = state.campaignLevels.isNotEmpty
+        ? state.campaignLevels.first
+        : state.level;
+    loadLevel(
+      tutorialLevel,
+      isTutorialMode: true,
+      tutorialReturnLevel: state.level,
+    );
+  }
+
+  void loadNextLevel() {
+    if (state.isTutorialReplay) {
+      final returnLevel = state.tutorialReturnLevel!;
+      loadLevel(returnLevel, isTutorialMode: false);
+      return;
+    }
+    final next = state.nextLevel;
+    if (next == null) return;
+    final unlockedNext =
+        next.isUnlocked ? next : next.copyWith(isUnlocked: true);
+    loadLevel(unlockedNext, isTutorialMode: false);
   }
 
   Future<void> skipTutorial() async {
     await tutorialService?.setTutorialCompleted(true);
     if (isClosed) return;
-    loadLevel(state.level, isTutorialMode: false);
+    if (state.isTutorialReplay) {
+      loadLevel(state.tutorialReturnLevel!, isTutorialMode: false);
+    } else {
+      loadLevel(state.level, isTutorialMode: false);
+    }
   }
 
-  Future<void> skipCurrentLevel() async {
-    if (state.isTutorialMode || state.isWon) return;
-    if (saveProgressUseCase != null && state.level.id > 0) {
-      await saveProgressUseCase!.skipLevel(
-        levelId: state.level.id,
-        difficulty: state.level.difficulty,
-      );
+  Future<bool> skipCurrentLevel() async {
+    if (!state.canSkipLevel) return false;
+    final currentLevel = state.level;
+    final next = state.nextLevel;
+    if (next == null) return false;
+
+    final repo = levelRepository;
+    if (saveProgressUseCase != null && currentLevel.id > 0) {
+      try {
+        await saveProgressUseCase!.skipLevel(
+          levelId: currentLevel.id,
+          difficulty: currentLevel.difficulty,
+        );
+      } catch (_) {
+        return false;
+      }
+    } else if (repo != null && currentLevel.id > 0) {
+      try {
+        await repo.skipLevel(
+          levelId: currentLevel.id,
+          difficulty: currentLevel.difficulty,
+        );
+      } catch (_) {
+        return false;
+      }
     }
-    await _clearInProgressState(state.level.id);
+
+    _boardEpoch++;
+    final updatedCurrent = currentLevel.copyWith(
+      isUnlocked: true,
+      isSkipped: currentLevel.stars == 0,
+    );
+    final updatedCampaign = _withUpdatedCampaignProgress(
+      state.campaignLevels,
+      updatedLevel: updatedCurrent,
+    );
+    await _clearInProgressState(currentLevel.id);
+    if (isClosed) return true;
+
+    final unlockedNext =
+        next.isUnlocked ? next : next.copyWith(isUnlocked: true);
+    emit(state.copyWith(campaignLevels: updatedCampaign));
+    loadLevel(unlockedNext, isTutorialMode: false);
+    return true;
   }
 
   ({int minRow, int maxRow, int minCol, int maxCol})?
@@ -440,6 +674,7 @@ class GameCubit extends Cubit<GameState> {
     }
 
     final currentLevel = state.level;
+    final epoch = ++_boardEpoch;
 
     if (nextBoard.isWon) {
       final stars = BoardEngine.calculateStars(
@@ -457,6 +692,11 @@ class GameCubit extends Cubit<GameState> {
         bestMoves: newBest,
         stars: newStars,
         isUnlocked: true,
+        isSkipped: false,
+      );
+      final updatedCampaign = _withUpdatedCampaignProgress(
+        state.campaignLevels,
+        updatedLevel: updatedLevel,
       );
 
       final bonusHint = (stars == 3 && currentLevel.stars < 3) ? 1 : 0;
@@ -470,6 +710,7 @@ class GameCubit extends Cubit<GameState> {
       emit(
         state.copyWith(
           level: updatedLevel,
+          campaignLevels: updatedCampaign,
           boardState: nextBoard,
           clearHint: true,
           isComputingHint: false,
@@ -517,7 +758,11 @@ class GameCubit extends Cubit<GameState> {
         ),
       );
 
-      await _saveInProgressState(currentLevel.id, nextBoard);
+      await _saveInProgressState(
+        currentLevel.id,
+        nextBoard,
+        expectedEpoch: epoch,
+      );
       if (isClosed) return;
       await audioService.playSlide();
     }
@@ -564,6 +809,7 @@ class GameCubit extends Cubit<GameState> {
     }
 
     final currentLevel = state.level;
+    _boardEpoch++;
     final nextStepIndex = state.tutorialStepIndex + 1;
     if (nextBoard.isWon || nextStepIndex >= state.tutorialSteps.length) {
       final stars = BoardEngine.calculateStars(
@@ -579,11 +825,17 @@ class GameCubit extends Cubit<GameState> {
         bestMoves: newBest,
         stars: newStars,
         isUnlocked: true,
+        isSkipped: false,
+      );
+      final updatedCampaign = _withUpdatedCampaignProgress(
+        state.campaignLevels,
+        updatedLevel: updatedLevel,
       );
 
       emit(
         state.copyWith(
           level: updatedLevel,
+          campaignLevels: updatedCampaign,
           boardState: nextBoard,
           clearHint: true,
           isWon: true,
@@ -630,10 +882,15 @@ class GameCubit extends Cubit<GameState> {
 
   void undo() {
     if (!state.canUndo) return;
+    final epoch = ++_boardEpoch;
     _hintRequestId++;
     final prevBoard = BoardEngine.undo(state.boardState);
     audioService.playUndoWhoosh();
-    _saveInProgressState(state.level.id, prevBoard);
+    _saveInProgressState(
+      state.level.id,
+      prevBoard,
+      expectedEpoch: epoch,
+    );
     emit(
       state.copyWith(
         boardState: prevBoard,
@@ -646,6 +903,7 @@ class GameCubit extends Cubit<GameState> {
   }
 
   void reset() {
+    _boardEpoch++;
     _hintRequestId++;
     final resetBoard = BoardEngine.reset(
       state.boardState,

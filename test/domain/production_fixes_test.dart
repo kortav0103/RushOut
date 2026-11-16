@@ -5,16 +5,20 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:rush_out/core/network/network_info.dart';
 import 'package:rush_out/core/services/audio_service.dart';
 import 'package:rush_out/core/services/error_reporting_service.dart';
+import 'package:rush_out/data/datasources/level_asset_datasource.dart';
 import 'package:rush_out/data/datasources/supabase_remote_datasource.dart';
 import 'package:rush_out/data/models/score_model.dart';
+import 'package:rush_out/data/repositories/level_repository_impl.dart';
 import 'package:rush_out/domain/entities/leaderboard_entry.dart';
 import 'package:rush_out/domain/entities/level.dart';
 import 'package:rush_out/domain/repositories/daily_challenge_repository.dart';
 import 'package:rush_out/domain/repositories/leaderboard_repository.dart';
+import 'package:rush_out/domain/usecases/save_progress.dart';
 import 'package:rush_out/domain/usecases/submit_score.dart';
 import 'package:rush_out/presentation/bloc/daily_cubit.dart';
 import 'package:rush_out/presentation/bloc/game_cubit.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../helpers/in_memory_local_database_datasource.dart';
 
 class _FakeDailyChallengeRepository implements DailyChallengeRepository {
   DailyChallenge challenge;
@@ -166,9 +170,17 @@ void main() {
     });
 
     test('GameCubit persists and restores Undo moveHistory across process death', () async {
+      final localDb = InMemoryLocalDatabaseDataSource();
+      final levelRepo = LevelRepositoryImpl(
+        assetDataSource: LevelAssetDataSource(),
+        localDataSource: localDb,
+      );
+      final saveProgress = SaveProgress(levelRepo);
+
       final cubit1 = GameCubit(
         level: sampleLevel,
         audioService: AudioService(enablePlatformAudio: false),
+        saveProgressUseCase: saveProgress,
       );
 
       await cubit1.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
@@ -176,10 +188,11 @@ void main() {
       expect(cubit1.state.canUndo, isTrue);
       await cubit1.close();
 
-      // Simulate fresh process / cubit re-creation restoring from SharedPreferences
+      // Simulate fresh process / cubit re-creation restoring from LevelRepository
       final cubit2 = GameCubit(
         level: sampleLevel,
         audioService: AudioService(enablePlatformAudio: false),
+        saveProgressUseCase: saveProgress,
       );
       // Allow async _restoreInProgressState to complete
       await Future<void>.delayed(const Duration(milliseconds: 20));

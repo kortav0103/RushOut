@@ -16,6 +16,7 @@ class LevelSelectScreen extends StatefulWidget {
   final SaveProgress saveProgressUseCase;
   final AudioService audioService;
   final TutorialService? tutorialService;
+  final bool autoStartTutorial;
 
   const LevelSelectScreen({
     super.key,
@@ -23,6 +24,7 @@ class LevelSelectScreen extends StatefulWidget {
     required this.saveProgressUseCase,
     required this.audioService,
     this.tutorialService,
+    this.autoStartTutorial = false,
   });
 
   @override
@@ -39,13 +41,16 @@ class _LevelSelectScreenState extends State<LevelSelectScreen> {
   late final LevelSelectCubit _cubit;
   final ScrollController _scrollController = ScrollController();
   bool _hasAutoScrolledOnOpen = false;
+  bool _hasAutoStartedTutorial = false;
   double _lastGridContentWidth = 400.0;
 
   @override
   void initState() {
     super.initState();
-    _cubit = LevelSelectCubit(getLevelsUseCase: widget.getLevelsUseCase)
-      ..loadLevels();
+    _cubit = LevelSelectCubit(
+      getLevelsUseCase: widget.getLevelsUseCase,
+      tutorialService: widget.tutorialService,
+    )..loadLevels();
   }
 
   @override
@@ -111,12 +116,9 @@ class _LevelSelectScreenState extends State<LevelSelectScreen> {
       return;
     }
 
-    final shouldRunTutorial = displayNumber == 1 &&
-        widget.tutorialService != null &&
-        !(await widget.tutorialService!.hasCompletedTutorial());
-    if (!mounted) return;
+    final shouldRunTutorial = _cubit.state.shouldRunTutorialForLevel(displayNumber);
 
-    await Navigator.of(context).push<bool>(
+    await Navigator.of(context).push<Object?>(
       MaterialPageRoute(
         builder: (_) => GameScreen(
           initialLevel: level,
@@ -140,15 +142,25 @@ class _LevelSelectScreenState extends State<LevelSelectScreen> {
       value: _cubit,
       child: BlocConsumer<LevelSelectCubit, LevelSelectState>(
         listener: (context, state) {
-          if (!state.isLoading &&
-              state.levels.isNotEmpty &&
-              !_hasAutoScrolledOnOpen) {
-            _hasAutoScrolledOnOpen = true;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (mounted) {
-                _scrollToLevelIndex(state.frontierIndex, animate: false);
-              }
-            });
+          if (!state.isLoading && state.levels.isNotEmpty) {
+            if (!_hasAutoScrolledOnOpen) {
+              _hasAutoScrolledOnOpen = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  _scrollToLevelIndex(state.frontierIndex, animate: false);
+                }
+              });
+            }
+            if (widget.autoStartTutorial &&
+                !_hasAutoStartedTutorial &&
+                state.shouldRunTutorialForLevel(1)) {
+              _hasAutoStartedTutorial = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) {
+                  _openLevel(state.levels.first, 1, state.levels);
+                }
+              });
+            }
           }
         },
         builder: (context, state) {
@@ -329,15 +341,11 @@ class _LevelSelectScreenState extends State<LevelSelectScreen> {
                         final level = state.levels[index];
                         final displayNumber = index + 1;
                         final isCurrent = index == frontierIndex;
-                        final isSkipped = level.isUnlocked &&
-                            level.stars == 0 &&
-                            index + 1 < state.levels.length &&
-                            state.levels[index + 1].isUnlocked;
                         return _TactileLevelTile(
                           displayNumber: displayNumber,
                           level: level,
                           isCurrent: isCurrent,
-                          isSkipped: isSkipped,
+                          isSkipped: level.isSkipped,
                           onTap: () => _openLevel(
                             level,
                             displayNumber,

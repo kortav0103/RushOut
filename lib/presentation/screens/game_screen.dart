@@ -13,6 +13,8 @@ import '../widgets/tactile_widgets.dart';
 import '../widgets/win_dialog.dart';
 
 class GameScreen extends StatefulWidget {
+  static const String backToLevelsResult = 'back_to_levels';
+
   final Level initialLevel;
   final List<Level> allLevels;
   final AudioService audioService;
@@ -36,15 +38,14 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen> {
   late final GameCubit _gameCubit;
-  late List<Level> _levels;
   bool _winDialogShown = false;
 
   @override
   void initState() {
     super.initState();
-    _levels = List<Level>.from(widget.allLevels);
     _gameCubit = GameCubit(
       level: widget.initialLevel,
+      initialLevels: widget.allLevels,
       audioService: widget.audioService,
       saveProgressUseCase: widget.saveProgressUseCase,
       tutorialService: widget.tutorialService,
@@ -238,8 +239,7 @@ class _GameScreenState extends State<GameScreen> {
     setState(() {
       _winDialogShown = false;
     });
-    final level1 = _levels.isNotEmpty ? _levels.first : _gameCubit.state.level;
-    _gameCubit.startTutorial(level: level1);
+    _gameCubit.replayTutorial();
   }
 
   void _handleEscapeComplete(GameState state) {
@@ -247,9 +247,37 @@ class _GameScreenState extends State<GameScreen> {
     _showWinModal(state, isTutorialComplete: state.isTutorialMode);
   }
 
+  void _showSnackBar(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(
+          backgroundColor: DaylightColors.inkPrimary,
+          duration: const Duration(seconds: 2),
+          content: Text(
+            message,
+            style: DaylightTypography.rounded(
+              color: Colors.white,
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      );
+  }
+
   Future<void> _confirmAndSkipLevel(GameState state) async {
-    final nextLevel = _findNextLevel(state.level.id);
-    if (nextLevel == null || state.isTutorialMode || state.isWon) return;
+    if (!state.canShowSkipButton) return;
+    if (!state.canSkipLevel) {
+      _showSnackBar(
+        state.skipLockedReason ?? 'Make more moves before skipping!',
+      );
+      return;
+    }
+
+    final nextLevel = state.nextLevel;
+    if (nextLevel == null) return;
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -353,13 +381,17 @@ class _GameScreenState extends State<GameScreen> {
     );
 
     if (confirmed != true || !mounted) return;
-    await _gameCubit.skipCurrentLevel();
+    final skipped = await _gameCubit.skipCurrentLevel();
     if (!mounted) return;
-    _syncLevelProgressInMemory(state.level);
-    setState(() {
-      _winDialogShown = false;
-    });
-    _gameCubit.loadLevel(nextLevel);
+    if (skipped) {
+      setState(() {
+        _winDialogShown = false;
+      });
+    } else {
+      _showSnackBar(
+        _gameCubit.state.skipLockedReason ?? 'Unable to skip this level.',
+      );
+    }
   }
 
   @override
@@ -368,34 +400,9 @@ class _GameScreenState extends State<GameScreen> {
     super.dispose();
   }
 
-  void _syncLevelProgressInMemory(Level updatedLevel) {
-    for (int i = 0; i < _levels.length; i++) {
-      if (_levels[i].id == updatedLevel.id) {
-        _levels[i] = updatedLevel;
-      } else if (_levels[i].id == updatedLevel.id + 1 &&
-          !_levels[i].isUnlocked) {
-        _levels[i] = _levels[i].copyWith(isUnlocked: true);
-      }
-    }
-  }
-
-  Level? _findNextLevel(int currentId) {
-    final idx = _levels.indexWhere((l) => l.id == currentId);
-    if (idx >= 0 && idx + 1 < _levels.length) {
-      return _levels[idx + 1];
-    }
-    for (final level in _levels) {
-      if (level.id == currentId + 1) return level;
-    }
-    return null;
-  }
-
   void _showWinModal(GameState state, {bool isTutorialComplete = false}) {
     if (_winDialogShown || !mounted) return;
     _winDialogShown = true;
-
-    _syncLevelProgressInMemory(state.level);
-    final nextLevel = _findNextLevel(state.level.id);
 
     showDialog<void>(
       context: context,
@@ -407,11 +414,11 @@ class _GameScreenState extends State<GameScreen> {
           userMoves: state.boardState.moveCount,
           optimalMoves: state.boardState.optimalMoves,
           earnedStars: state.earnedStars,
-          hasNextLevel: nextLevel != null,
+          hasNextLevel: state.hasNextLevel,
           isTutorialComplete: isTutorialComplete,
           onBackToLevels: () {
             Navigator.of(dialogContext).pop();
-            Navigator.of(context).pop(true);
+            Navigator.of(context).pop(GameScreen.backToLevelsResult);
           },
           onReplay: () {
             Navigator.of(dialogContext).pop();
@@ -422,11 +429,11 @@ class _GameScreenState extends State<GameScreen> {
           },
           onNextLevel: () {
             Navigator.of(dialogContext).pop();
-            if (nextLevel != null) {
+            if (state.hasNextLevel) {
               setState(() {
                 _winDialogShown = false;
               });
-              _gameCubit.loadLevel(nextLevel);
+              _gameCubit.loadNextLevel();
             }
           },
         );
@@ -474,14 +481,16 @@ class _GameScreenState extends State<GameScreen> {
                 ),
               ),
               actions: [
-                if (!state.isTutorialMode &&
-                    !state.isWon &&
-                    _findNextLevel(state.level.id) != null)
+                if (state.canShowSkipButton)
                   IconButton(
-                    tooltip: 'Skip Level',
-                    icon: const Icon(
+                    tooltip: state.canSkipLevel
+                        ? 'Skip Level'
+                        : (state.skipLockedReason ?? 'Skip Level Locked'),
+                    icon: Icon(
                       Icons.skip_next_rounded,
-                      color: DaylightColors.inkPrimary,
+                      color: state.canSkipLevel
+                          ? DaylightColors.inkPrimary
+                          : DaylightColors.lockedInk,
                     ),
                     onPressed: () => _confirmAndSkipLevel(state),
                   ),
@@ -532,6 +541,47 @@ class _GameScreenState extends State<GameScreen> {
                     child: Column(
                       children: [
                         if (state.isTutorialMode &&
+                            state.isLoadingTutorial) ...[
+                          const SizedBox(height: 8),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 460),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 10,
+                              ),
+                              decoration: BoxDecoration(
+                                color: DaylightColors.surfaceWhite,
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: DaylightColors.brandRed,
+                                  width: 1.5,
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: DaylightColors.brandRed,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Text(
+                                    'Preparing tutorial guide...',
+                                    style: DaylightTypography.rounded(
+                                      color: DaylightColors.inkPrimary,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ] else if (state.isTutorialMode &&
                             state.tutorialInstruction != null) ...[
                           const SizedBox(height: 8),
                           ConstrainedBox(

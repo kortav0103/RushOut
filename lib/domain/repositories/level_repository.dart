@@ -24,4 +24,17 @@ abstract class LevelRepository {
   /// Atomically applies [delta] (e.g. -1 on hint use, +1 on first 3-star win)
   /// to the persisted hint wallet (clamped to >= 0) and returns the updated balance.
   Future<int> updateRemainingHints(int delta);
+
+  /// Returns the persisted in-progress state for [levelId], or null if none exists
+  /// or if the saved board is incompatible with [expectedBoardString].
+  Future<InProgressLevelState?> getInProgressLevel(
+    int levelId, {
+    String? expectedBoardString,
+  });
+
+  /// Persists an in-progress board state for [state.levelId] sequentially.
+  Future<void> saveInProgressLevel(InProgressLevelState state);
+
+  /// Clears any persisted in-progress board state for [levelId] sequentially.
+  Future<void> clearInProgressLevel(int levelId);
 }
