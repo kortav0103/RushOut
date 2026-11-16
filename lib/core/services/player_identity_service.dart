@@ -1,48 +1,150 @@
 import 'dart:math' as math;
-import 'package:device_info_plus/device_info_plus.dart';
+import 'package:equatable/equatable.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../data/datasources/local_database_datasource.dart';
 import '../../data/datasources/supabase_remote_datasource.dart';
+import '../error/exceptions.dart';
 import '../network/network_info.dart';
 import 'tutorial_service.dart';
 
+enum AccountMode {
+  guest,
+  cloudAccount,
+}
+
+class PlayerProfileSnapshot extends Equatable {
+  final AccountMode accountMode;
+  final String? username;
+  final String? email;
+  final bool cloudSyncEnabled;
+  final bool isCloudSynced;
+  final DateTime? lastSyncedAt;
+
+  const PlayerProfileSnapshot({
+    this.accountMode = AccountMode.guest,
+    this.username,
+    this.email,
+    this.cloudSyncEnabled = false,
+    this.isCloudSynced = false,
+    this.lastSyncedAt,
+  });
+
+  bool get hasUsername => username != null && username!.trim().isNotEmpty;
+
+  bool get isRecoverable =>
+      accountMode == AccountMode.cloudAccount &&
+      email != null &&
+      email!.trim().isNotEmpty;
+
+  @override
+  List<Object?> get props => [
+        accountMode,
+        username,
+        email,
+        cloudSyncEnabled,
+        isCloudSynced,
+        lastSyncedAt,
+      ];
+}
+
+class CloudSyncReport extends Equatable {
+  final bool success;
+  final String? errorMessage;
+  final int uploadedCount;
+  final int downloadedCount;
+  final DateTime? syncedAt;
+
+  const CloudSyncReport({
+    required this.success,
+    this.errorMessage,
+    this.uploadedCount = 0,
+    this.downloadedCount = 0,
+    this.syncedAt,
+  });
+
+  factory CloudSyncReport.succeeded({
+    int uploadedCount = 0,
+    int downloadedCount = 0,
+    DateTime? syncedAt,
+  }) {
+    return CloudSyncReport(
+      success: true,
+      uploadedCount: uploadedCount,
+      downloadedCount: downloadedCount,
+      syncedAt: syncedAt ?? DateTime.now().toUtc(),
+    );
+  }
+
+  factory CloudSyncReport.failed(String message) {
+    return CloudSyncReport(
+      success: false,
+      errorMessage: message,
+    );
+  }
+
+  @override
+  List<Object?> get props => [
+        success,
+        errorMessage,
+        uploadedCount,
+        downloadedCount,
+        syncedAt,
+      ];
+}
+
 class PlayerIdentityService {
-  static const String _deviceIdKey = 'rush_out_device_id';
   static const String _usernameKey = 'rush_out_player_username';
+  static const String _usernameUpdatedAtKey = 'rush_out_username_updated_at';
   static const String _lastSyncedAtKey = 'rush_out_last_synced_at';
   static const String _cloudSyncEnabledKey = 'rush_out_cloud_sync_enabled';
 
-  static final RegExp _validNameRegex =
-      RegExp(r'^[a-zA-Z0-9_\-\sÀ-ỹ]+$');
+  /// Allows ASCII letters/digits, spaces, hyphens, underscores, and valid
+  /// Latin/Vietnamese letters while explicitly excluding U+00D7 (×) & U+00F7 (÷).
+  static final RegExp _validNameRegex = RegExp(
+    r'^[a-zA-Z0-9_\-\s\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F\u1E00-\u1EFF]+$',
+  );
 
-  static const List<String> _blockedTerms = [
+  static final RegExp _emailRegex = RegExp(
+    r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$',
+  );
+
+  static const List<String> _blockedPhrases = [
     'fuck',
     'shit',
     'bitch',
     'asshole',
-    'dick',
-    'pussy',
-    'cunt',
     'nigger',
     'faggot',
     'whore',
     'slut',
-    'dm',
+    'pussy',
+    'cunt',
+    'du ma',
+    'duma',
+    'dit me',
+    'ditme',
+    'con cac',
+    'cai lon',
+    'http://',
+    'https://',
+    'www.',
+    '.com',
+    '.net',
+    '.org',
+    '.vn',
+  ];
+
+  static const List<String> _blockedTokens = [
+    'dick',
     'dkm',
     'dmm',
     'vcl',
-    'vl',
-    'cc',
-    'cl',
+    'vkl',
     'dit',
-    'du ma',
     'lon',
     'buoi',
     'cac',
-    'http',
-    'www.',
-    '.com',
   ];
 
   final SupabaseRemoteDataSource remoteDataSource;
@@ -50,15 +152,18 @@ class PlayerIdentityService {
   final TutorialService tutorialService;
   final NetworkInfo networkInfo;
   final Future<SharedPreferences> Function()? _prefsProvider;
-  final Future<String?> Function()? _deviceIdProvider;
 
-  String _deviceId = '';
+  final ValueNotifier<PlayerProfileSnapshot> snapshotNotifier =
+      ValueNotifier<PlayerProfileSnapshot>(const PlayerProfileSnapshot());
+
   String? _username;
+  DateTime? _usernameUpdatedAt;
   DateTime? _lastSyncedAt;
   bool _cloudSyncEnabled = false;
   bool _hasSyncedCloud = false;
   bool _isInitialized = false;
-  Future<bool>? _ongoingSync;
+  Future<void>? _initFuture;
+  Future<CloudSyncReport>? _ongoingSync;
 
   PlayerIdentityService({
     required this.remoteDataSource,
@@ -66,19 +171,23 @@ class PlayerIdentityService {
     required this.tutorialService,
     required this.networkInfo,
     Future<SharedPreferences> Function()? prefsProvider,
-    Future<String?> Function()? deviceIdProvider,
-  })  : _prefsProvider = prefsProvider,
-        _deviceIdProvider = deviceIdProvider;
+  }) : _prefsProvider = prefsProvider;
 
-  String get deviceId => _deviceId;
+  PlayerProfileSnapshot get snapshot => snapshotNotifier.value;
   String? get username => _username;
+  String? get email => remoteDataSource.hasRecoverableSession
+      ? remoteDataSource.currentUserEmail
+      : null;
+  AccountMode get accountMode => remoteDataSource.hasRecoverableSession
+      ? AccountMode.cloudAccount
+      : AccountMode.guest;
+  bool get isRecoverable => remoteDataSource.hasRecoverableSession;
   DateTime? get lastSyncedAt => _lastSyncedAt;
   bool get hasUsername => _username != null && _username!.trim().isNotEmpty;
-  bool get isCloudSyncEnabled => _cloudSyncEnabled;
-  bool get isCloudSynced => _hasSyncedCloud;
+  bool get isCloudSyncEnabled => isRecoverable && _cloudSyncEnabled;
+  bool get isCloudSynced => isRecoverable && _hasSyncedCloud;
 
-  /// Validates player username/nickname for length, allowed characters,
-  /// and profanity/spam links (single source of truth for Profile & Leaderboard).
+  /// Validates player nickname for length, allowed characters, and profanity/links.
   static String? validateUsername(String rawName) {
     final trimmed = rawName.trim();
     if (trimmed.length < 2 || trimmed.length > 24) {
@@ -87,147 +196,305 @@ class PlayerIdentityService {
     if (!_validNameRegex.hasMatch(trimmed)) {
       return 'Only letters, numbers, spaces, hyphens, and underscores are allowed.';
     }
-    final lower = trimmed.toLowerCase();
-    final tokens = lower.split(RegExp(r'[\s_\-]+'));
-    for (final term in _blockedTerms) {
-      if (term.contains('.') || term.length >= 4) {
-        if (lower.contains(term)) {
-          return 'Please choose an appropriate nickname without restricted words or links.';
-        }
-      } else if (tokens.contains(term)) {
+
+    final folded = _foldVietnameseDiacritics(trimmed.toLowerCase());
+    final collapsedSpaces = folded.replaceAll(RegExp(r'\s+'), ' ');
+    for (final phrase in _blockedPhrases) {
+      if (collapsedSpaces.contains(phrase)) {
+        return 'Please choose an appropriate nickname without restricted words or links.';
+      }
+    }
+
+    final tokens = collapsedSpaces
+        .split(RegExp(r'[\s_\-]+'))
+        .where((t) => t.isNotEmpty)
+        .toSet();
+    for (final token in _blockedTokens) {
+      if (tokens.contains(token)) {
         return 'Please choose an appropriate nickname without restricted words.';
       }
     }
     return null;
   }
 
+  static String? validateEmail(String rawEmail) {
+    final trimmed = rawEmail.trim();
+    if (trimmed.isEmpty) {
+      return 'Please enter your email address.';
+    }
+    if (!_emailRegex.hasMatch(trimmed)) {
+      return 'Please enter a valid email address.';
+    }
+    return null;
+  }
+
+  static String? validateOtpCode(String rawCode) {
+    final trimmed = rawCode.trim();
+    if (trimmed.length < 6 || !RegExp(r'^\d+$').hasMatch(trimmed)) {
+      return 'Enter the 6-digit verification code from your email.';
+    }
+    return null;
+  }
+
+  static String _foldVietnameseDiacritics(String input) {
+    const replacements = {
+      'à': 'a',
+      'á': 'a',
+      'ạ': 'a',
+      'ả': 'a',
+      'ã': 'a',
+      'â': 'a',
+      'ầ': 'a',
+      'ấ': 'a',
+      'ậ': 'a',
+      'ẩ': 'a',
+      'ẫ': 'a',
+      'ă': 'a',
+      'ằ': 'a',
+      'ắ': 'a',
+      'ặ': 'a',
+      'ẳ': 'a',
+      'ẵ': 'a',
+      'è': 'e',
+      'é': 'e',
+      'ẹ': 'e',
+      'ẻ': 'e',
+      'ẽ': 'e',
+      'ê': 'e',
+      'ề': 'e',
+      'ế': 'e',
+      'ệ': 'e',
+      'ể': 'e',
+      'ễ': 'e',
+      'ì': 'i',
+      'í': 'i',
+      'ị': 'i',
+      'ỉ': 'i',
+      'ĩ': 'i',
+      'ò': 'o',
+      'ó': 'o',
+      'ọ': 'o',
+      'ỏ': 'o',
+      'õ': 'o',
+      'ô': 'o',
+      'ồ': 'o',
+      'ố': 'o',
+      'ộ': 'o',
+      'ổ': 'o',
+      'ỗ': 'o',
+      'ơ': 'o',
+      'ờ': 'o',
+      'ớ': 'o',
+      'ợ': 'o',
+      'ở': 'o',
+      'ỡ': 'o',
+      'ù': 'u',
+      'ú': 'u',
+      'ụ': 'u',
+      'ủ': 'u',
+      'ũ': 'u',
+      'ư': 'u',
+      'ừ': 'u',
+      'ứ': 'u',
+      'ự': 'u',
+      'ử': 'u',
+      'ữ': 'u',
+      'ỳ': 'y',
+      'ý': 'y',
+      'ỵ': 'y',
+      'ỷ': 'y',
+      'ỹ': 'y',
+      'đ': 'd',
+    };
+    final buffer = StringBuffer();
+    for (final rune in input.runes) {
+      final ch = String.fromCharCode(rune);
+      buffer.write(replacements[ch] ?? ch);
+    }
+    return buffer.toString();
+  }
+
   Future<SharedPreferences> _prefs() =>
       _prefsProvider?.call() ?? SharedPreferences.getInstance();
 
-  Future<void> init() async {
-    if (_isInitialized) return;
-    _isInitialized = true;
-
-    try {
-      final prefs = await _prefs();
-      _username = prefs.getString(_usernameKey);
-      _cloudSyncEnabled = prefs.getBool(_cloudSyncEnabledKey) ?? false;
-      final syncedRaw = prefs.getString(_lastSyncedAtKey);
-      if (syncedRaw != null) {
-        _lastSyncedAt = DateTime.tryParse(syncedRaw);
-      }
-
-      if (_deviceIdProvider != null) {
-        final provided = await _deviceIdProvider!();
-        if (provided != null && provided.trim().isNotEmpty) {
-          _deviceId = provided.trim();
-          await prefs.setString(_deviceIdKey, _deviceId);
-        } else {
-          _deviceId = prefs.getString(_deviceIdKey) ?? '';
-          if (_deviceId.isEmpty) {
-            _deviceId = _generateFallbackUuid();
-            await prefs.setString(_deviceIdKey, _deviceId);
-          }
-        }
-      } else {
-        // Installation-scoped identifier persisted in SharedPreferences.
-        // Note: Reinstalling or clearing app data generates a fresh local installation ID.
-        final storedId = prefs.getString(_deviceIdKey);
-        if (storedId != null && storedId.trim().isNotEmpty) {
-          _deviceId = storedId.trim();
-        } else {
-          final hardwareId = await _resolveInstallationFallbackId();
-          _deviceId = (hardwareId != null && hardwareId.trim().isNotEmpty)
-              ? hardwareId.trim()
-              : _generateFallbackUuid();
-          await prefs.setString(_deviceIdKey, _deviceId);
-        }
-      }
-    } catch (_) {
-      if (_deviceId.isEmpty) {
-        _deviceId = _generateFallbackUuid();
-      }
-    }
+  void _publishSnapshot() {
+    snapshotNotifier.value = PlayerProfileSnapshot(
+      accountMode: accountMode,
+      username: _username,
+      email: email,
+      cloudSyncEnabled: isCloudSyncEnabled,
+      isCloudSynced: isCloudSynced,
+      lastSyncedAt: _lastSyncedAt,
+    );
   }
 
-  Future<String?> _resolveInstallationFallbackId() async {
-    if (_deviceIdProvider != null) {
-      return await _deviceIdProvider!();
-    }
-    if (kIsWeb) return null;
+  /// Initializes local preferences and loads any securely persisted cloud
+  /// session. Concurrent callers share the in-flight initialization Future, and
+  /// [_isInitialized] is only marked true once all awaits succeed.
+  Future<void> init() {
+    if (_isInitialized) return Future<void>.value();
+    final inFlight = _initFuture;
+    if (inFlight != null) return inFlight;
 
-    try {
-      final plugin = DeviceInfoPlugin();
-      switch (defaultTargetPlatform) {
-        case TargetPlatform.windows:
-          final info = await plugin.windowsInfo;
-          return info.deviceId.isNotEmpty ? 'win_${info.deviceId}' : null;
-        case TargetPlatform.android:
-          // Android does not expose a stable reinstall-proof ID without user sign-in;
-          // use a generated installation UUID instead of fingerprinting hardware.
-          return _generateFallbackUuid();
-        case TargetPlatform.iOS:
-          final info = await plugin.iosInfo;
-          final vendor = info.identifierForVendor;
-          return (vendor != null && vendor.isNotEmpty) ? 'ios_$vendor' : null;
-        case TargetPlatform.macOS:
-          final info = await plugin.macOsInfo;
-          final guid = info.systemGUID;
-          return (guid != null && guid.isNotEmpty) ? 'mac_$guid' : null;
-        case TargetPlatform.linux:
-          final info = await plugin.linuxInfo;
-          final id = info.machineId;
-          return (id != null && id.isNotEmpty) ? 'lin_$id' : null;
-        case TargetPlatform.fuchsia:
-          return null;
+    final future = _performInit();
+    _initFuture = future;
+    return future.whenComplete(() {
+      if (identical(_initFuture, future)) {
+        _initFuture = null;
       }
-    } catch (_) {
-      return null;
-    }
+    });
   }
 
-  /// Enables or disables opt-in cloud backup sync.
-  Future<void> setCloudSyncEnabled(bool enabled) async {
-    await init();
-    _cloudSyncEnabled = enabled;
-    try {
-      final prefs = await _prefs();
-      await prefs.setBool(_cloudSyncEnabledKey, enabled);
-    } catch (_) {}
-    if (!enabled) {
+  Future<void> _performInit() async {
+    final prefs = await _prefs();
+    final savedUsername = prefs.getString(_usernameKey);
+    _username = (savedUsername != null && savedUsername.trim().isNotEmpty)
+        ? savedUsername.trim()
+        : null;
+
+    final updatedRaw = prefs.getString(_usernameUpdatedAtKey);
+    _usernameUpdatedAt =
+        updatedRaw != null ? DateTime.tryParse(updatedRaw)?.toUtc() : null;
+
+    _cloudSyncEnabled = prefs.getBool(_cloudSyncEnabledKey) ?? false;
+
+    final syncedRaw = prefs.getString(_lastSyncedAtKey);
+    _lastSyncedAt =
+        syncedRaw != null ? DateTime.tryParse(syncedRaw)?.toUtc() : null;
+
+    await remoteDataSource.loadSavedSession();
+    if (!remoteDataSource.hasRecoverableSession) {
+      _cloudSyncEnabled = false;
       _hasSyncedCloud = false;
     }
+
+    _isInitialized = true;
+    _publishSnapshot();
   }
 
-  /// Validates and saves the player's username locally, then syncs to cloud if opted in.
-  Future<void> setUsername(String rawName) async {
+  /// Saves nickname locally and syncs to cloud if a recoverable account is
+  /// linked and cloud sync is enabled.
+  Future<CloudSyncReport?> setUsername(String rawName) async {
     await init();
     final validationError = validateUsername(rawName);
     if (validationError != null) {
       throw ArgumentError(validationError);
     }
+
     final trimmed = rawName.trim();
-
+    final now = DateTime.now().toUtc();
     _username = trimmed;
-    try {
-      final prefs = await _prefs();
-      await prefs.setString(_usernameKey, trimmed);
-    } catch (_) {}
+    _usernameUpdatedAt = now;
 
-    if (_cloudSyncEnabled) {
-      try {
-        await syncWithCloud();
-      } catch (_) {}
+    final prefs = await _prefs();
+    await prefs.setString(_usernameKey, trimmed);
+    await prefs.setString(_usernameUpdatedAtKey, now.toIso8601String());
+    _publishSnapshot();
+
+    if (isCloudSyncEnabled) {
+      return syncWithCloud();
     }
+    return null;
   }
 
-  /// Two-way merge sync between local SQLite/SharedPreferences and Supabase
-  /// scoped to the authenticated session (`auth.uid()`). Requires opt-in unless [force] is true.
-  Future<bool> syncWithCloud({bool force = false}) {
+  /// Sends an email OTP code to link or recover an account.
+  Future<void> requestEmailOtp(String rawEmail) async {
+    await init();
+    final emailError = validateEmail(rawEmail);
+    if (emailError != null) {
+      throw ArgumentError(emailError);
+    }
+    if (!remoteDataSource.isConfigured) {
+      throw const ServerException(
+        'Cloud account linking is unavailable because Supabase is not configured.',
+      );
+    }
+    if (!await networkInfo.isConnected) {
+      throw const ServerException(
+        'No internet connection. Connect to the internet and try again.',
+      );
+    }
+    await remoteDataSource.sendEmailOtp(rawEmail.trim().toLowerCase());
+  }
+
+  /// Verifies the email OTP code, persists the recoverable session in secure
+  /// storage, enables cloud sync, and performs a two-way cloud merge sync.
+  Future<CloudSyncReport> verifyEmailOtpAndSync({
+    required String email,
+    required String otpCode,
+  }) async {
+    await init();
+    final emailError = validateEmail(email);
+    if (emailError != null) {
+      throw ArgumentError(emailError);
+    }
+    final codeError = validateOtpCode(otpCode);
+    if (codeError != null) {
+      throw ArgumentError(codeError);
+    }
+    if (!remoteDataSource.isConfigured) {
+      throw const ServerException(
+        'Cloud account linking is unavailable because Supabase is not configured.',
+      );
+    }
+    if (!await networkInfo.isConnected) {
+      throw const ServerException(
+        'No internet connection. Connect to the internet and try again.',
+      );
+    }
+
+    await remoteDataSource.verifyEmailOtp(
+      email: email.trim().toLowerCase(),
+      otpCode: otpCode.trim(),
+    );
+
+    _cloudSyncEnabled = true;
+    final prefs = await _prefs();
+    await prefs.setBool(_cloudSyncEnabledKey, true);
+    _publishSnapshot();
+
+    return syncWithCloud(force: true);
+  }
+
+  /// Toggles cloud backup sync for an already linked recoverable account.
+  Future<void> setCloudSyncEnabled(bool enabled) async {
+    await init();
+    if (enabled && !isRecoverable) {
+      throw const ServerException(
+        'Link an email account before enabling cloud backup and recovery.',
+      );
+    }
+    _cloudSyncEnabled = enabled;
+    final prefs = await _prefs();
+    await prefs.setBool(_cloudSyncEnabledKey, enabled);
+    if (!enabled) {
+      _hasSyncedCloud = false;
+    }
+    _publishSnapshot();
+  }
+
+  /// Signs out of the recoverable cloud account while keeping local SQLite
+  /// campaign progress and local nickname on this device.
+  Future<void> signOutCloudAccount() async {
+    await init();
+    await remoteDataSource.signOut();
+    _cloudSyncEnabled = false;
+    _hasSyncedCloud = false;
+    _lastSyncedAt = null;
+    final prefs = await _prefs();
+    await prefs.setBool(_cloudSyncEnabledKey, false);
+    await prefs.remove(_lastSyncedAtKey);
+    _publishSnapshot();
+  }
+
+  /// Performs a two-way merge sync with Supabase scoped to a verified
+  /// recoverable `auth.uid()`. Returns a detailed [CloudSyncReport] and never
+  /// fakes success on failure.
+  Future<CloudSyncReport> syncWithCloud({bool force = false}) {
     final active = _ongoingSync;
     if (active != null) return active;
 
-    late final Future<bool> syncFuture;
+    late final Future<CloudSyncReport> syncFuture;
     syncFuture = _performSyncWithCloud(force: force).whenComplete(() {
       if (identical(_ongoingSync, syncFuture)) {
         _ongoingSync = null;
@@ -237,34 +504,65 @@ class PlayerIdentityService {
     return syncFuture;
   }
 
-  Future<bool> _performSyncWithCloud({bool force = false}) async {
-    await init();
-    if ((!_cloudSyncEnabled && !force) ||
-        _deviceId.isEmpty ||
-        !remoteDataSource.isConfigured) {
-      return false;
-    }
-    final connected = await networkInfo.isConnected;
-    if (!connected) return false;
-
+  Future<CloudSyncReport> _performSyncWithCloud({required bool force}) async {
     try {
-      // 1. Fetch remote profile for this deviceId
-      final remoteProfile =
-          await remoteDataSource.fetchDeviceProfile(_deviceId);
-
-      // Restore username if local was wiped (e.g. reinstall on same device)
-      final remoteUsername = remoteProfile?['username'] as String?;
-      if ((_username == null || _username!.trim().isEmpty) &&
-          remoteUsername != null &&
-          remoteUsername.trim().isNotEmpty) {
-        _username = remoteUsername.trim();
-        try {
-          final prefs = await _prefs();
-          await prefs.setString(_usernameKey, _username!);
-        } catch (_) {}
+      await init();
+      if (!remoteDataSource.isConfigured) {
+        return CloudSyncReport.failed(
+          'Cloud sync is unavailable because Supabase is not configured.',
+        );
+      }
+      if (!isRecoverable) {
+        return CloudSyncReport.failed(
+          'Link an email account to sync and recover progress across devices.',
+        );
+      }
+      if (!_cloudSyncEnabled && !force) {
+        return CloudSyncReport.failed(
+          'Cloud progress sync is currently turned off.',
+        );
+      }
+      if (!await networkInfo.isConnected) {
+        return CloudSyncReport.failed(
+          'No internet connection. Progress remains saved locally.',
+        );
       }
 
-      // Restore or merge tutorial completion
+      // 1. Fetch & merge profile by updated_at
+      final remoteProfile = await remoteDataSource.fetchPlayerProfile();
+      final remoteUsernameRaw = remoteProfile?['username'] as String?;
+      final remoteUsername =
+          (remoteUsernameRaw != null && remoteUsernameRaw.trim().isNotEmpty)
+              ? remoteUsernameRaw.trim()
+              : null;
+      final remoteUpdatedAtRaw = remoteProfile?['updated_at'] as String?;
+      final remoteUpdatedAt = remoteUpdatedAtRaw != null
+          ? DateTime.tryParse(remoteUpdatedAtRaw)?.toUtc()
+          : null;
+
+      bool shouldUploadProfile = false;
+      final prefs = await _prefs();
+
+      if (remoteUsername != null) {
+        final shouldAdoptRemote = !hasUsername ||
+            (remoteUpdatedAt != null &&
+                (_usernameUpdatedAt == null ||
+                    remoteUpdatedAt.isAfter(_usernameUpdatedAt!)));
+        if (shouldAdoptRemote) {
+          _username = remoteUsername;
+          _usernameUpdatedAt = remoteUpdatedAt ?? DateTime.now().toUtc();
+          await prefs.setString(_usernameKey, _username!);
+          await prefs.setString(
+            _usernameUpdatedAtKey,
+            _usernameUpdatedAt!.toIso8601String(),
+          );
+        } else if (_username != remoteUsername) {
+          shouldUploadProfile = true;
+        }
+      } else if (hasUsername) {
+        shouldUploadProfile = true;
+      }
+
       final localTutorial = await tutorialService.hasCompletedTutorial();
       final remoteTutorial =
           (remoteProfile?['tutorial_completed'] as bool?) ?? false;
@@ -272,33 +570,25 @@ class PlayerIdentityService {
       if (mergedTutorial && !localTutorial) {
         await tutorialService.setTutorialCompleted(true);
       }
-
-      // Only create/update remote profile once the player has a username
-      // (or already has a remote profile).
-      if (hasUsername || remoteProfile != null) {
-        final effectiveName = hasUsername
-            ? _username!.trim()
-            : (remoteUsername ?? 'Driver');
-        await remoteDataSource.upsertDeviceProfile(
-          deviceId: _deviceId,
-          username: effectiveName,
-          tutorialCompleted: mergedTutorial,
-        );
+      if (mergedTutorial != remoteTutorial) {
+        shouldUploadProfile = true;
       }
 
-      // 2. Two-way merge of level_progress
+      // 2. Fetch & merge level progress (best stars, min valid moves, unlocked, skipped)
       final localMap = await localDataSource.getAllLevelProgress();
-      final remoteRows =
-          await remoteDataSource.fetchDeviceLevelProgress(_deviceId);
+      final remoteRows = await remoteDataSource.fetchCloudLevelProgress();
 
       final Map<int, Map<String, dynamic>> remoteMap = {};
       for (final row in remoteRows) {
         final id = row['level_id'] as int?;
-        if (id != null) remoteMap[id] = row;
+        if (id != null && id >= 1) {
+          remoteMap[id] = row;
+        }
       }
 
       final allIds = <int>{...localMap.keys, ...remoteMap.keys};
       final List<Map<String, dynamic>> toUpload = [];
+      int downloadedCount = 0;
 
       for (final levelId in allIds) {
         final local = localMap[levelId];
@@ -308,8 +598,12 @@ class PlayerIdentityService {
         final remoteStars = (remote?['stars'] as int?) ?? 0;
         final mergedStars = math.max(localStars, remoteStars);
 
-        final localBest = local?['best_moves'] as int?;
-        final remoteBest = remote?['best_moves'] as int?;
+        final localBestRaw = local?['best_moves'] as int?;
+        final remoteBestRaw = remote?['best_moves'] as int?;
+        final localBest =
+            (localBestRaw != null && localBestRaw > 0) ? localBestRaw : null;
+        final remoteBest =
+            (remoteBestRaw != null && remoteBestRaw > 0) ? remoteBestRaw : null;
         final int? mergedBest;
         if (localBest == null) {
           mergedBest = remoteBest;
@@ -323,72 +617,119 @@ class PlayerIdentityService {
         final remoteUnlocked = (remote?['is_unlocked'] as bool?) ?? false;
         final mergedUnlocked = localUnlocked || remoteUnlocked;
 
-        final difficulty = (local?['difficulty'] as String?) ??
-            (remote?['difficulty'] as String?) ??
-            'easy';
+        final localSkipped = (local?['is_skipped'] as int? ?? 0) == 1;
+        final remoteSkipped = (remote?['is_skipped'] as bool?) ?? false;
+        final mergedSkipped =
+            mergedStars > 0 ? false : (localSkipped || remoteSkipped);
 
-        // Update local SQLite if remote brought newer/better progress (e.g. after reinstall)
+        final difficulty = _normalizeDifficulty(
+          (local?['difficulty'] as String?) ??
+              (remote?['difficulty'] as String?),
+        );
+
+        final localUpdatedAt = _parseUtc(local?['updated_at'] as String?);
+        final remoteUpdatedAtRow = _parseUtc(remote?['updated_at'] as String?);
+        final latestUpdatedAt = _maxDate(localUpdatedAt, remoteUpdatedAtRow) ??
+            DateTime.now().toUtc();
+
         if (local == null ||
             mergedStars != localStars ||
             mergedBest != localBest ||
-            (mergedUnlocked && !localUnlocked)) {
+            mergedUnlocked != localUnlocked ||
+            mergedSkipped != localSkipped) {
           await localDataSource.upsertLevelProgress(
             levelId: levelId,
             difficulty: difficulty,
             bestMoves: mergedBest,
             stars: mergedStars,
             isUnlocked: mergedUnlocked,
+            isSkipped: mergedSkipped,
           );
+          downloadedCount++;
         }
 
-        // Upload to cloud only if a profile exists on cloud (foreign key constraint)
-        if ((hasUsername || remoteProfile != null) &&
-            (remote == null ||
-                mergedStars != remoteStars ||
-                mergedBest != remoteBest ||
-                (mergedUnlocked && !remoteUnlocked))) {
+        if (remote == null ||
+            mergedStars != remoteStars ||
+            mergedBest != remoteBest ||
+            mergedUnlocked != remoteUnlocked ||
+            mergedSkipped != remoteSkipped) {
           toUpload.add({
-            'device_id': _deviceId,
             'level_id': levelId,
             'difficulty': difficulty,
             'best_moves': mergedBest,
             'stars': mergedStars,
             'is_unlocked': mergedUnlocked,
-            'updated_at': DateTime.now().toUtc().toIso8601String(),
+            'is_skipped': mergedSkipped,
+            'updated_at': latestUpdatedAt.toIso8601String(),
           });
         }
       }
 
-      if (toUpload.isNotEmpty) {
-        await remoteDataSource.upsertDeviceLevelProgressBatch(toUpload);
+      // Ensure parent player_profiles row exists before uploading child rows.
+      if (remoteProfile == null && (hasUsername || toUpload.isNotEmpty)) {
+        shouldUploadProfile = true;
       }
 
-      _hasSyncedCloud = true;
-      _lastSyncedAt = DateTime.now();
-      try {
-        final prefs = await _prefs();
-        await prefs.setString(
-          _lastSyncedAtKey,
-          _lastSyncedAt!.toIso8601String(),
+      if (shouldUploadProfile) {
+        final effectiveName = hasUsername ? _username!.trim() : 'Driver';
+        await remoteDataSource.upsertPlayerProfile(
+          username: effectiveName,
+          tutorialCompleted: mergedTutorial,
+          updatedAt: _usernameUpdatedAt ?? DateTime.now().toUtc(),
         );
-      } catch (_) {}
+      }
 
-      return true;
+      if (toUpload.isNotEmpty) {
+        await remoteDataSource.upsertCloudLevelProgressBatch(toUpload);
+      }
+
+      final now = DateTime.now().toUtc();
+      _hasSyncedCloud = true;
+      _lastSyncedAt = now;
+      await prefs.setString(_lastSyncedAtKey, now.toIso8601String());
+      _publishSnapshot();
+
+      return CloudSyncReport.succeeded(
+        uploadedCount: toUpload.length,
+        downloadedCount: downloadedCount,
+        syncedAt: now,
+      );
+    } on ServerException catch (e) {
+      _hasSyncedCloud = false;
+      _publishSnapshot();
+      return CloudSyncReport.failed(e.message);
     } catch (_) {
-      return false;
+      _hasSyncedCloud = false;
+      _publishSnapshot();
+      return CloudSyncReport.failed(
+        'Cloud sync failed. Your progress remains saved locally.',
+      );
     }
   }
 
-  static String _generateShortHex(int count) {
-    final rng = math.Random.secure();
-    return List.generate(
-      count,
-      (_) => rng.nextInt(16).toRadixString(16),
-    ).join();
+  static String _normalizeDifficulty(String? raw) {
+    switch (raw?.toLowerCase().trim()) {
+      case 'medium':
+        return 'medium';
+      case 'hard':
+        return 'hard';
+      default:
+        return 'easy';
+    }
   }
 
-  static String _generateFallbackUuid() {
-    final rng = math.Random.secure();
-    return 'dev_${_generateShortHex(8)}-${_generateShortHex(4)}-4${_generateShortHex(3)}-${(8 + rng.nextInt(4)).toRadixString(16)}${_generateShortHex(3)}-${_generateShortHex(12)}';
+  static DateTime? _parseUtc(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    return DateTime.tryParse(raw)?.toUtc();
+  }
+
+  static DateTime? _maxDate(DateTime? a, DateTime? b) {
+    if (a == null) return b;
+    if (b == null) return a;
+    return a.isAfter(b) ? a : b;
+  }
+
+  void dispose() {
+    snapshotNotifier.dispose();
   }
 }

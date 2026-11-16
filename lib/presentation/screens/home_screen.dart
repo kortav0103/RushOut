@@ -1,17 +1,17 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../core/services/audio_service.dart';
-import '../../core/services/player_identity_service.dart';
 import '../../core/services/tutorial_service.dart';
 import '../../domain/repositories/daily_challenge_repository.dart';
 import '../../domain/usecases/get_levels.dart';
 import '../../domain/usecases/save_progress.dart';
 import '../../domain/usecases/get_leaderboard.dart';
 import '../../domain/usecases/submit_score.dart';
+import '../bloc/profile_cubit.dart';
 import '../theme/daylight_theme.dart';
 import '../widgets/dialogs/privacy_policy_dialog.dart';
 import '../widgets/dialogs/profile_dialog.dart';
 import '../widgets/dialogs/settings_dialog.dart';
-import '../widgets/dialogs/username_prompt_dialog.dart';
 import '../widgets/how_to_play_dialog.dart';
 import '../widgets/tactile_widgets.dart';
 import 'daily_screen.dart';
@@ -22,7 +22,7 @@ import 'level_select_screen.dart';
 class HomeScreen extends StatefulWidget {
   final AudioService audioService;
   final TutorialService? tutorialService;
-  final PlayerIdentityService? playerIdentityService;
+  final ProfileCubit? profileCubit;
   final GetLevels getLevelsUseCase;
   final SaveProgress saveProgressUseCase;
   final DailyChallengeRepository dailyRepository;
@@ -33,7 +33,7 @@ class HomeScreen extends StatefulWidget {
     super.key,
     required this.audioService,
     this.tutorialService,
-    this.playerIdentityService,
+    this.profileCubit,
     required this.getLevelsUseCase,
     required this.saveProgressUseCase,
     required this.dailyRepository,
@@ -54,14 +54,6 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _tutorialService = widget.tutorialService ?? TutorialService();
     widget.audioService.startBgm();
-    final identity = widget.playerIdentityService;
-    if (identity != null && !identity.hasUsername) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          _showUsernamePromptDialog(isFirstLaunch: true);
-        }
-      });
-    }
   }
 
   void _showErrorSnackBar(String message) {
@@ -181,37 +173,19 @@ class _HomeScreenState extends State<HomeScreen> {
           submitScoreUseCase: widget.submitScoreUseCase,
           audioService: widget.audioService,
           onOpenLeaderboard: _openLeaderboard,
-          defaultPlayerName: widget.playerIdentityService?.username,
+          defaultPlayerName: widget.profileCubit?.state.username,
         ),
       ),
     );
   }
 
-  Future<void> _showUsernamePromptDialog({bool isFirstLaunch = false}) async {
-    final identity = widget.playerIdentityService;
-    if (identity == null) return;
-
-    await UsernamePromptDialog.show(
-      context,
-      identity: identity,
-      isFirstLaunch: isFirstLaunch,
-      onSaved: () {
-        if (mounted) setState(() {});
-      },
-    );
-  }
-
   Future<void> _showProfileDialog() async {
-    final identity = widget.playerIdentityService;
-    if (identity == null) return;
+    final cubit = widget.profileCubit;
+    if (cubit == null) return;
 
     await ProfileDialog.show(
       context,
-      identity: identity,
-      onEditName: () => _showUsernamePromptDialog(isFirstLaunch: false),
-      onSynced: () {
-        if (mounted) setState(() {});
-      },
+      profileCubit: cubit,
     );
   }
 
@@ -254,48 +228,66 @@ class _HomeScreenState extends State<HomeScreen> {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              if (widget.playerIdentityService != null)
-                                TactileKeycap(
-                                  onTap: _showProfileDialog,
-                                  surfaceColor: DaylightColors.surfaceWhite,
-                                  lipColor: DaylightColors.surfaceLip,
-                                  borderColor: DaylightColors.surfaceLip,
-                                  borderRadius: 14,
-                                  lipHeight: 2.5,
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 8,
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(
-                                        Icons.person_rounded,
-                                        size: 18,
-                                        color: widget.playerIdentityService!
-                                                .isCloudSynced
+                              if (widget.profileCubit != null)
+                                BlocBuilder<ProfileCubit, ProfileState>(
+                                  bloc: widget.profileCubit,
+                                  builder: (context, profileState) {
+                                    final iconData =
+                                        profileState.isRecoverable &&
+                                                profileState.isCloudSynced
+                                            ? Icons.cloud_done_rounded
+                                            : profileState.isRecoverable
+                                                ? Icons.cloud_queue_rounded
+                                                : Icons.person_outline_rounded;
+                                    final iconColor =
+                                        profileState.isRecoverable &&
+                                                profileState.isCloudSynced
                                             ? DaylightColors.completedMintLip
-                                            : DaylightColors.frontierAmberLip,
+                                            : profileState.isRecoverable
+                                                ? DaylightColors.frontierAmberLip
+                                                : DaylightColors.inkSecondary;
+
+                                    return TactileKeycap(
+                                      onTap: _showProfileDialog,
+                                      surfaceColor: DaylightColors.surfaceWhite,
+                                      lipColor: DaylightColors.surfaceLip,
+                                      borderColor: DaylightColors.surfaceLip,
+                                      borderRadius: 14,
+                                      lipHeight: 2.5,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 8,
                                       ),
-                                      const SizedBox(width: 6),
-                                      ConstrainedBox(
-                                        constraints:
-                                            const BoxConstraints(maxWidth: 130),
-                                        child: Text(
-                                          widget.playerIdentityService!
-                                                  .username ??
-                                              'Set Name',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: DaylightTypography.rounded(
-                                            fontSize: 13,
-                                            fontWeight: FontWeight.w800,
-                                            color: DaylightColors.inkPrimary,
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(
+                                            iconData,
+                                            size: 18,
+                                            color: iconColor,
                                           ),
-                                        ),
+                                          const SizedBox(width: 6),
+                                          ConstrainedBox(
+                                            constraints: const BoxConstraints(
+                                              maxWidth: 130,
+                                            ),
+                                            child: Text(
+                                              profileState.username ??
+                                                  'Guest Driver',
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: DaylightTypography.rounded(
+                                                fontSize: 13,
+                                                fontWeight: FontWeight.w800,
+                                                color:
+                                                    DaylightColors.inkPrimary,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ),
+                                    );
+                                  },
                                 )
                               else
                                 const SizedBox.shrink(),

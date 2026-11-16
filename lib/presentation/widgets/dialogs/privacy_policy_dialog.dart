@@ -41,7 +41,7 @@ class PrivacyPolicyDialog extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(
-              '1. Local Data Storage (Offline-First)',
+              '1. Local Data Storage (Offline Guest Mode)',
               style: TextStyle(
                 color: DaylightColors.inkPrimary,
                 fontWeight: FontWeight.bold,
@@ -50,7 +50,7 @@ class PrivacyPolicyDialog extends StatelessWidget {
             ),
             SizedBox(height: 4),
             Text(
-              'Campaign level progress, star ratings, in-progress board moves, and audio preferences are stored locally on your device using SQLite and SharedPreferences. Uninstalling the app or clearing app data removes local data.',
+              'Campaign level progress, star ratings, in-progress board moves, and audio preferences are stored locally on your device using SQLite and SharedPreferences. In Guest Mode, no account is created and uninstalling the app or clearing app data permanently removes local progress.',
               style: TextStyle(
                 color: DaylightColors.inkSecondary,
                 fontSize: 13,
@@ -67,7 +67,7 @@ class PrivacyPolicyDialog extends StatelessWidget {
             ),
             SizedBox(height: 4),
             Text(
-              'When you choose to submit a Daily Challenge score, an anonymous session identifier, your chosen display nickname, completion date, and move count are transmitted to our Supabase leaderboard service. No contacts, location data, or email addresses are collected.',
+              'When you choose to submit a Daily Challenge score, your Supabase session ID, chosen display nickname, completion date, and move count are transmitted to our Supabase leaderboard service. No contacts or location data are collected.',
               style: TextStyle(
                 color: DaylightColors.inkSecondary,
                 fontSize: 13,
@@ -75,7 +75,7 @@ class PrivacyPolicyDialog extends StatelessWidget {
             ),
             SizedBox(height: 12),
             Text(
-              '3. Optional Cloud Progress Sync',
+              '3. Optional Email Account & Cloud Progress Sync',
               style: TextStyle(
                 color: DaylightColors.inkPrimary,
                 fontWeight: FontWeight.bold,
@@ -84,7 +84,7 @@ class PrivacyPolicyDialog extends StatelessWidget {
             ),
             SizedBox(height: 4),
             Text(
-              'Cloud sync is disabled by default. When you explicitly enable Cloud Sync in your Driver Profile, we transmit your anonymous session ID, an app-scoped installation identifier, nickname, tutorial status, campaign level progress, and update timestamps to Supabase so your profile is backed up under your anonymous session.',
+              'Cloud backup is disabled by default. To back up and restore progress after reinstalling or switching devices, you may optionally link an email address via one-time verification code (OTP). Authentication tokens are stored in your device\'s encrypted secure storage, and your nickname, tutorial status, and campaign level progress are synced to Supabase strictly under your verified account ID.',
               style: TextStyle(
                 color: DaylightColors.inkSecondary,
                 fontSize: 13,

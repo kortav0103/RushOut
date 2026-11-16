@@ -16,12 +16,14 @@ import '../domain/usecases/get_leaderboard.dart';
 import '../domain/usecases/get_levels.dart';
 import '../domain/usecases/save_progress.dart';
 import '../domain/usecases/submit_score.dart';
+import '../presentation/bloc/profile_cubit.dart';
 
 /// Composition root holding initialized services, repositories, and use cases.
 class AppDependencies {
   final AudioService audioService;
   final TutorialService tutorialService;
   final PlayerIdentityService playerIdentityService;
+  final ProfileCubit profileCubit;
   final GetLevels getLevelsUseCase;
   final SaveProgress saveProgressUseCase;
   final DailyChallengeRepository dailyRepository;
@@ -32,6 +34,7 @@ class AppDependencies {
     required this.audioService,
     required this.tutorialService,
     required this.playerIdentityService,
+    required this.profileCubit,
     required this.getLevelsUseCase,
     required this.saveProgressUseCase,
     required this.dailyRepository,
@@ -80,6 +83,8 @@ class AppDependencies {
       } catch (_) {}
     }
 
+    final profileCubit = ProfileCubit(identityService: playerIdentityService);
+
     final levelRepository = LevelRepositoryImpl(
       assetDataSource: assetDataSource,
       localDataSource: localDataSource,
@@ -103,6 +108,7 @@ class AppDependencies {
       audioService: audioService,
       tutorialService: tutorialService,
       playerIdentityService: playerIdentityService,
+      profileCubit: profileCubit,
       getLevelsUseCase: GetLevels(levelRepository),
       saveProgressUseCase: SaveProgress(levelRepository),
       dailyRepository: dailyRepository,

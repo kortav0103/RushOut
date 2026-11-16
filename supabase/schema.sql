@@ -188,96 +188,75 @@ WHERE NOT EXISTS (
 );
 
 -- ============================================================================
--- 5. AUTHENTICATED PLAYER PROFILE & CLOUD PROGRESS SYNC (ANONYMOUS AUTH)
+-- 5. RECOVERABLE PLAYER PROFILE & CLOUD PROGRESS SYNC (NON-ANONYMOUS AUTH)
+-- Requires verified account auth (e.g. Email OTP / OAuth) so progress can be
+-- safely restored across reinstalls and multiple devices via auth.uid().
+-- Anonymous sessions cannot read or write cloud backup tables.
 -- ============================================================================
 
--- 5.1 Table: device_profiles (scoped strictly to auth.uid())
-CREATE TABLE IF NOT EXISTS public.device_profiles (
+-- 5.1 Table: player_profiles (scoped strictly to recoverable auth.uid())
+CREATE TABLE IF NOT EXISTS public.player_profiles (
     user_id UUID PRIMARY KEY DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE,
-    device_id TEXT NOT NULL DEFAULT '',
     username VARCHAR(24) NOT NULL CHECK (char_length(trim(username)) BETWEEN 2 AND 24),
     tutorial_completed BOOLEAN NOT NULL DEFAULT false,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 5.2 Table: device_level_progress (scoped strictly to auth.uid())
-CREATE TABLE IF NOT EXISTS public.device_level_progress (
-    user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES public.device_profiles(user_id) ON DELETE CASCADE,
-    device_id TEXT NOT NULL DEFAULT '',
+-- 5.2 Table: player_level_progress (scoped strictly to recoverable auth.uid())
+CREATE TABLE IF NOT EXISTS public.player_level_progress (
+    user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES public.player_profiles(user_id) ON DELETE CASCADE,
     level_id INTEGER NOT NULL CHECK (level_id >= 1),
-    difficulty VARCHAR(16) NOT NULL,
-    best_moves INTEGER,
+    difficulty VARCHAR(16) NOT NULL CHECK (difficulty IN ('easy', 'medium', 'hard')),
+    best_moves INTEGER CHECK (best_moves IS NULL OR best_moves >= 1),
     stars INTEGER NOT NULL DEFAULT 0 CHECK (stars BETWEEN 0 AND 3),
     is_unlocked BOOLEAN NOT NULL DEFAULT true,
+    is_skipped BOOLEAN NOT NULL DEFAULT false,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, level_id)
 );
 
--- Safe idempotent migration if upgrading from legacy unauthenticated device_id-only schema
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'device_profiles'
-          AND column_name = 'user_id'
-    ) THEN
-        -- Legacy rows had no authenticated owner and cannot be safely bound to auth.users
-        TRUNCATE TABLE public.device_level_progress, public.device_profiles;
-        ALTER TABLE public.device_level_progress
-            DROP CONSTRAINT IF EXISTS device_level_progress_pkey,
-            DROP CONSTRAINT IF EXISTS device_level_progress_device_id_fkey;
-        ALTER TABLE public.device_profiles
-            DROP CONSTRAINT IF EXISTS device_profiles_pkey;
-        ALTER TABLE public.device_profiles
-            ADD COLUMN user_id UUID PRIMARY KEY DEFAULT auth.uid() REFERENCES auth.users(id) ON DELETE CASCADE;
-        ALTER TABLE public.device_level_progress
-            ADD COLUMN user_id UUID NOT NULL DEFAULT auth.uid() REFERENCES public.device_profiles(user_id) ON DELETE CASCADE;
-        ALTER TABLE public.device_level_progress
-            ADD PRIMARY KEY (user_id, level_id);
-    END IF;
-END $$;
+CREATE INDEX IF NOT EXISTS idx_player_level_progress_user
+    ON public.player_level_progress (user_id, level_id);
 
-CREATE INDEX IF NOT EXISTS idx_device_level_progress_user
-    ON public.device_level_progress (user_id, level_id);
+ALTER TABLE public.player_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.player_level_progress ENABLE ROW LEVEL SECURITY;
 
-ALTER TABLE public.device_profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.device_level_progress ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "player_profiles_owner_recoverable_all" ON public.player_profiles;
+DROP POLICY IF EXISTS "player_level_progress_owner_recoverable_all" ON public.player_level_progress;
 
--- Drop any legacy public/anon policies
-DROP POLICY IF EXISTS "Allow device profile read" ON public.device_profiles;
-DROP POLICY IF EXISTS "Allow device profile insert" ON public.device_profiles;
-DROP POLICY IF EXISTS "Allow device profile update" ON public.device_profiles;
-DROP POLICY IF EXISTS "Allow device progress read" ON public.device_level_progress;
-DROP POLICY IF EXISTS "Allow device progress insert" ON public.device_level_progress;
-DROP POLICY IF EXISTS "Allow device progress update" ON public.device_level_progress;
-DROP POLICY IF EXISTS "device_profiles_owner_all" ON public.device_profiles;
-DROP POLICY IF EXISTS "device_level_progress_owner_all" ON public.device_level_progress;
+REVOKE ALL ON public.player_profiles FROM anon;
+REVOKE ALL ON public.player_level_progress FROM anon;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.player_profiles TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.player_level_progress TO authenticated;
 
-REVOKE ALL ON public.device_profiles FROM anon;
-REVOKE ALL ON public.device_level_progress FROM anon;
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.device_profiles TO authenticated;
-GRANT SELECT, INSERT, UPDATE, DELETE ON public.device_level_progress TO authenticated;
-
-CREATE POLICY "device_profiles_owner_all"
-    ON public.device_profiles
+CREATE POLICY "player_profiles_owner_recoverable_all"
+    ON public.player_profiles
     FOR ALL
     TO authenticated
-    USING (auth.uid() = user_id)
+    USING (
+        auth.uid() = user_id
+        AND COALESCE((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
+    )
     WITH CHECK (
         auth.uid() = user_id
+        AND COALESCE((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
         AND char_length(trim(username)) BETWEEN 2 AND 24
-        AND username ~ '^[a-zA-Z0-9_\-\sÀ-ỹ]+$'
+        AND username ~ '^[a-zA-Z0-9_\- \u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F\u1E00-\u1EFF]+$'
     );
 
-CREATE POLICY "device_level_progress_owner_all"
-    ON public.device_level_progress
+CREATE POLICY "player_level_progress_owner_recoverable_all"
+    ON public.player_level_progress
     FOR ALL
     TO authenticated
-    USING (auth.uid() = user_id)
+    USING (
+        auth.uid() = user_id
+        AND COALESCE((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
+    )
     WITH CHECK (
         auth.uid() = user_id
+        AND COALESCE((auth.jwt() ->> 'is_anonymous')::boolean, false) = false
         AND level_id >= 1
+        AND difficulty IN ('easy', 'medium', 'hard')
+        AND (best_moves IS NULL OR best_moves >= 1)
         AND stars BETWEEN 0 AND 3
     );
