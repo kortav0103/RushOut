@@ -38,20 +38,20 @@ Slide obstructing vehicles along their fixed horizontal (`↔`) or vertical (`�
 lib/
 ├── core/
 │   ├── constants/        # Grid size (6), difficulty ranges, asset paths
-│   ├── error/            # Exceptions & Failures
+│   ├── error/            # Exceptions
 │   ├── network/          # NetworkInfo connectivity checker (connectivity_plus)
 │   ├── services/         # AudioService, HapticService, TutorialService, PlayerIdentityService, ErrorReportingService
 │   └── utils/            # LevelParser (36-char string -> Vehicle list)
 ├── data/
 │   ├── datasources/      # LevelAssetDataSource, LocalDatabaseDataSource (SQLite), SupabaseRemoteDataSource (Dio)
-│   ├── models/           # VehicleModel, LevelModel, ScoreModel, DailyChallengeModel
+│   ├── models/           # LevelModel, ScoreModel, DailyChallengeModel
 │   └── repositories/     # Offline-first repository implementations
 ├── domain/
 │   ├── engine/           # BoardEngine, LevelOrderingPipeline
 │   ├── entities/         # Vehicle, BoardState, Move, Level, LeaderboardEntry, DailyChallenge
 │   ├── repositories/     # Abstract repository contracts
 │   ├── solver/           # BfsSolver (shortest-path BFS hint finder)
-│   └── usecases/         # GetLevels, SaveProgress, GetDailyChallenge, SubmitScore, GetLeaderboard
+│   └── usecases/         # GetLevels, SaveProgress, SubmitScore, GetLeaderboard
 ├── presentation/
 │   ├── bloc/             # GameCubit, LevelSelectCubit, DailyCubit, LeaderboardCubit
 │   ├── screens/          # HomeScreen, LevelSelectScreen, GameScreen, DailyScreen, LeaderboardScreen

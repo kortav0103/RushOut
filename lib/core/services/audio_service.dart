@@ -46,12 +46,17 @@ class AudioService with WidgetsBindingObserver {
     try {
       _bgmPlayer = AudioPlayer();
       await _bgmPlayer!.setReleaseMode(ReleaseMode.loop);
-      await _bgmPlayer!.setVolume(_isMuted ? 0.0 : 0.3);
+      await _bgmPlayer!.setVolume(_isMuted ? 0.0 : 0.35);
+
+      final sfxContext = AudioContextConfig(
+        focus: AudioContextConfigFocus.mixWithOthers,
+      ).build();
 
       for (int i = 0; i < _sfxPoolSize; i++) {
         final sfx = AudioPlayer();
+        await sfx.setAudioContext(sfxContext);
         await sfx.setReleaseMode(ReleaseMode.stop);
-        await sfx.setVolume(_isMuted ? 0.0 : 0.8);
+        await sfx.setVolume(_isMuted ? 0.0 : 0.85);
         _sfxPool.add(sfx);
       }
     } catch (_) {
@@ -82,7 +87,7 @@ class AudioService with WidgetsBindingObserver {
       await _bgmPlayer!.setReleaseMode(ReleaseMode.loop);
       await _bgmPlayer!.play(
         AssetSource('audio/bgm_loop.mp3'),
-        volume: 0.3,
+        volume: 0.35,
       );
     } catch (_) {}
   }
@@ -114,7 +119,7 @@ class AudioService with WidgetsBindingObserver {
 
     try {
       if (_bgmPlayer != null) {
-        await _bgmPlayer!.setVolume(_isMuted ? 0.0 : 0.3);
+        await _bgmPlayer!.setVolume(_isMuted ? 0.0 : 0.35);
         if (_isMuted) {
           await _bgmPlayer!.pause();
         } else {
@@ -122,7 +127,7 @@ class AudioService with WidgetsBindingObserver {
         }
       }
       for (final sfx in _sfxPool) {
-        await sfx.setVolume(_isMuted ? 0.0 : 0.8);
+        await sfx.setVolume(_isMuted ? 0.0 : 0.85);
       }
     } catch (_) {}
     return _isMuted;
@@ -135,7 +140,7 @@ class AudioService with WidgetsBindingObserver {
       final player = _sfxPool[_sfxPoolIndex];
       _sfxPoolIndex = (_sfxPoolIndex + 1) % _sfxPool.length;
       await player.stop();
-      await player.play(AssetSource(cleaned), volume: 0.8);
+      await player.play(AssetSource(cleaned), volume: 0.85);
     } catch (_) {}
   }
 
