@@ -171,8 +171,8 @@ class _HomeScreenState extends State<HomeScreen> {
         builder: (_) => DailyScreen(
           dailyRepository: widget.dailyRepository,
           submitScoreUseCase: widget.submitScoreUseCase,
+          getLeaderboardUseCase: widget.getLeaderboardUseCase,
           audioService: widget.audioService,
-          onOpenLeaderboard: _openLeaderboard,
           defaultPlayerName: widget.profileCubit?.state.username,
         ),
       ),

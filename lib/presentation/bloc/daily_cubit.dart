@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:isolate';
 import 'dart:math' as math;
 import 'package:equatable/equatable.dart';
@@ -26,9 +27,15 @@ class DailyState extends Equatable {
   final bool isComputingHint;
   final int remainingHints;
   final bool isWon;
+  final bool isReviewMode;
+  final bool hasSolvedBoardSnapshot;
   final int earnedStars;
+  final int? bestMoves;
+  final int bestStars;
   final bool isSubmittingScore;
   final bool scoreSubmitted;
+  final int? submittedMoves;
+  final String? submittedPlayerName;
   final String? errorMessage;
   final String? submitErrorMessage;
 
@@ -41,9 +48,15 @@ class DailyState extends Equatable {
     this.isComputingHint = false,
     this.remainingHints = 3,
     this.isWon = false,
+    this.isReviewMode = false,
+    this.hasSolvedBoardSnapshot = false,
     this.earnedStars = 0,
+    this.bestMoves,
+    this.bestStars = 0,
     this.isSubmittingScore = false,
     this.scoreSubmitted = false,
+    this.submittedMoves,
+    this.submittedPlayerName,
     this.errorMessage,
     this.submitErrorMessage,
   });
@@ -61,9 +74,16 @@ class DailyState extends Equatable {
     bool? isComputingHint,
     int? remainingHints,
     bool? isWon,
+    bool? isReviewMode,
+    bool? hasSolvedBoardSnapshot,
     int? earnedStars,
+    int? bestMoves,
+    bool clearBestMoves = false,
+    int? bestStars,
     bool? isSubmittingScore,
     bool? scoreSubmitted,
+    int? submittedMoves,
+    String? submittedPlayerName,
     String? errorMessage,
     bool clearError = false,
     String? submitErrorMessage,
@@ -78,9 +98,16 @@ class DailyState extends Equatable {
       isComputingHint: isComputingHint ?? this.isComputingHint,
       remainingHints: remainingHints ?? this.remainingHints,
       isWon: isWon ?? this.isWon,
+      isReviewMode: isReviewMode ?? this.isReviewMode,
+      hasSolvedBoardSnapshot:
+          hasSolvedBoardSnapshot ?? this.hasSolvedBoardSnapshot,
       earnedStars: earnedStars ?? this.earnedStars,
+      bestMoves: clearBestMoves ? null : (bestMoves ?? this.bestMoves),
+      bestStars: bestStars ?? this.bestStars,
       isSubmittingScore: isSubmittingScore ?? this.isSubmittingScore,
       scoreSubmitted: scoreSubmitted ?? this.scoreSubmitted,
+      submittedMoves: submittedMoves ?? this.submittedMoves,
+      submittedPlayerName: submittedPlayerName ?? this.submittedPlayerName,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       submitErrorMessage: clearSubmitError
           ? null
@@ -98,9 +125,15 @@ class DailyState extends Equatable {
         isComputingHint,
         remainingHints,
         isWon,
+        isReviewMode,
+        hasSolvedBoardSnapshot,
         earnedStars,
+        bestMoves,
+        bestStars,
         isSubmittingScore,
         scoreSubmitted,
+        submittedMoves,
+        submittedPlayerName,
         errorMessage,
         submitErrorMessage,
       ];
@@ -114,6 +147,7 @@ class DailyCubit extends Cubit<DailyState> {
   final Future<Move?> Function(BoardState board)? hintSolver;
 
   int _hintRequestId = 0;
+  Future<void> _dragQueue = Future<void>.value();
 
   DailyCubit({
     required this.dailyRepository,
@@ -139,15 +173,21 @@ class DailyCubit extends Cubit<DailyState> {
     return '$y-$m-$d';
   }
 
-  /// Validates player nickname for UGC compliance (length, characters, profanity).
-  static String? validatePlayerName(String rawName) =>
-      PlayerIdentityService.validateUsername(rawName);
+  /// Validates player nickname for UGC compliance (non-empty, length, chars, profanity).
+  static String? validatePlayerName(String rawName) {
+    final trimmed = rawName.trim();
+    if (trimmed.isEmpty) {
+      return 'Please enter a nickname before submitting your score.';
+    }
+    return PlayerIdentityService.validateUsername(trimmed);
+  }
 
   Future<void> loadDailyChallenge({String? dateKey}) async {
     _hintRequestId++;
     final targetDate = dateKey ?? state.dateKey;
     final preservedHints =
         targetDate == state.dateKey ? state.remainingHints : 3;
+
     emit(
       state.copyWith(
         status: DailyViewStatus.loading,
@@ -157,7 +197,11 @@ class DailyCubit extends Cubit<DailyState> {
         isComputingHint: false,
         remainingHints: preservedHints,
         isWon: false,
+        isReviewMode: false,
+        hasSolvedBoardSnapshot: false,
         earnedStars: 0,
+        clearBestMoves: true,
+        bestStars: 0,
         scoreSubmitted: false,
         clearSubmitError: true,
       ),
@@ -173,6 +217,7 @@ class DailyCubit extends Cubit<DailyState> {
 
       final challenge = await dailyRepository.getDailyChallenge(targetDate);
       if (isClosed) return;
+
       if (challenge.boardString.trim().isEmpty) {
         emit(
           state.copyWith(
@@ -184,27 +229,64 @@ class DailyCubit extends Cubit<DailyState> {
         return;
       }
 
-      final parsedBoard = LevelParser.parseToBoardState(
+      final parsedInitialBoard = LevelParser.parseToBoardState(
         challenge.boardString,
         optimalMoves: challenge.optimalMoves,
       );
 
       if (isClosed) return;
+
       if (challenge.isCompleted) {
-        final solvedMoves = challenge.userMoves ?? challenge.optimalMoves;
-        final stars = BoardEngine.calculateStars(
-          userMoves: solvedMoves,
-          optimalMoves: challenge.optimalMoves,
-        );
+        final recordedBestMoves =
+            challenge.userMoves ?? challenge.submittedMoves;
+        final bestStars = recordedBestMoves != null && recordedBestMoves > 0
+            ? BoardEngine.calculateStars(
+                userMoves: recordedBestMoves,
+                optimalMoves: challenge.optimalMoves,
+              )
+            : 0;
+
+        BoardState displayBoard = parsedInitialBoard;
+        bool hasSolvedSnapshot = false;
+
+        final solvedStr = challenge.solvedBoardString;
+        if (solvedStr != null && solvedStr.isNotEmpty) {
+          try {
+            final parsedSolved = LevelParser.parseToBoardState(
+              solvedStr,
+              optimalMoves: challenge.optimalMoves,
+            );
+            if (parsedSolved.isWon) {
+              final effectiveMoveCount = recordedBestMoves ??
+                  (challenge.bestMoveHistory.isNotEmpty
+                      ? challenge.bestMoveHistory.length
+                      : challenge.optimalMoves);
+              displayBoard = parsedSolved.copyWith(
+                moveCount: effectiveMoveCount,
+                moveHistory: challenge.bestMoveHistory,
+              );
+              hasSolvedSnapshot = true;
+            }
+          } catch (_) {
+            hasSolvedSnapshot = false;
+          }
+        }
+
         emit(
           state.copyWith(
             status: DailyViewStatus.content,
             challenge: challenge,
-            boardState: parsedBoard.copyWith(moveCount: solvedMoves),
+            boardState: displayBoard,
             remainingHints: persistedHints ?? state.remainingHints,
             isWon: true,
-            earnedStars: stars,
+            isReviewMode: true,
+            hasSolvedBoardSnapshot: hasSolvedSnapshot,
+            earnedStars: bestStars,
+            bestMoves: recordedBestMoves,
+            bestStars: bestStars,
             scoreSubmitted: challenge.scoreSubmitted,
+            submittedMoves: challenge.submittedMoves,
+            submittedPlayerName: challenge.submittedPlayerName,
           ),
         );
         return;
@@ -214,11 +296,17 @@ class DailyCubit extends Cubit<DailyState> {
         state.copyWith(
           status: DailyViewStatus.content,
           challenge: challenge,
-          boardState: parsedBoard,
+          boardState: parsedInitialBoard,
           remainingHints: persistedHints ?? state.remainingHints,
           isWon: false,
+          isReviewMode: false,
+          hasSolvedBoardSnapshot: false,
           earnedStars: 0,
+          clearBestMoves: true,
+          bestStars: 0,
           scoreSubmitted: challenge.scoreSubmitted,
+          submittedMoves: challenge.submittedMoves,
+          submittedPlayerName: challenge.submittedPlayerName,
         ),
       );
     } on EmptyDataException catch (e) {
@@ -229,12 +317,29 @@ class DailyCubit extends Cubit<DailyState> {
           errorMessage: e.message,
         ),
       );
-    } catch (e) {
+    } on ServerException catch (e) {
       if (isClosed) return;
       emit(
         state.copyWith(
           status: DailyViewStatus.error,
-          errorMessage: e.toString(),
+          errorMessage: e.message,
+        ),
+      );
+    } on LevelParseException catch (e) {
+      if (isClosed) return;
+      emit(
+        state.copyWith(
+          status: DailyViewStatus.error,
+          errorMessage: 'Daily Challenge puzzle data is invalid: ${e.message}',
+        ),
+      );
+    } catch (_) {
+      if (isClosed) return;
+      emit(
+        state.copyWith(
+          status: DailyViewStatus.error,
+          errorMessage:
+              'Unable to load today\'s Daily Challenge. Please check your connection and tap Retry.',
         ),
       );
     }
@@ -266,6 +371,28 @@ class DailyCubit extends Cubit<DailyState> {
     String vehicleId, {
     required double draggedRow,
     required double draggedCol,
+  }) {
+    final completer = Completer<void>();
+    _dragQueue = _dragQueue.then((_) async {
+      try {
+        await _handleVehicleDragEnd(
+          vehicleId,
+          draggedRow: draggedRow,
+          draggedCol: draggedCol,
+        );
+      } finally {
+        if (!completer.isCompleted) {
+          completer.complete();
+        }
+      }
+    });
+    return completer.future;
+  }
+
+  Future<void> _handleVehicleDragEnd(
+    String vehicleId, {
+    required double draggedRow,
+    required double draggedCol,
   }) async {
     final currentBoard = state.boardState;
     if (currentBoard == null || state.isWon || isClosed) return;
@@ -282,8 +409,17 @@ class DailyCubit extends Cubit<DailyState> {
 
     if (nextBoard.isWon) {
       _hintRequestId++;
+      final currentMoves = nextBoard.moveCount;
       final stars = BoardEngine.calculateStars(
-        userMoves: nextBoard.moveCount,
+        userMoves: currentMoves,
+        optimalMoves: nextBoard.optimalMoves,
+      );
+      final priorBest = state.bestMoves ?? state.challenge?.userMoves;
+      final effectiveBestMoves = (priorBest != null && priorBest <= currentMoves)
+          ? priorBest
+          : currentMoves;
+      final effectiveBestStars = BoardEngine.calculateStars(
+        userMoves: effectiveBestMoves,
         optimalMoves: nextBoard.optimalMoves,
       );
 
@@ -295,7 +431,12 @@ class DailyCubit extends Cubit<DailyState> {
           clearHint: true,
           isComputingHint: false,
           isWon: true,
+          isReviewMode: false,
+          hasSolvedBoardSnapshot: true,
           earnedStars: stars,
+          bestMoves: effectiveBestMoves,
+          bestStars: effectiveBestStars,
+          clearSubmitError: true,
         ),
       );
 
@@ -303,12 +444,33 @@ class DailyCubit extends Cubit<DailyState> {
       if (isClosed) return;
 
       try {
-        final updatedChallenge = await dailyRepository.saveDailyCompletion(
-          dateKey: state.dateKey,
-          userMoves: nextBoard.moveCount,
-        );
+        final DailyChallenge updatedChallenge;
+        final repo = dailyRepository;
+        if (repo is VerifiedDailyChallengeRepository) {
+          updatedChallenge = await repo.saveVerifiedCompletion(
+            dateKey: state.dateKey,
+            userMoves: currentMoves,
+            solvedBoardString: nextBoard.toBoardString(),
+            moveHistory: nextBoard.moveHistory,
+          );
+        } else {
+          updatedChallenge = await repo.saveDailyCompletion(
+            dateKey: state.dateKey,
+            userMoves: currentMoves,
+          );
+        }
         if (!isClosed) {
-          emit(state.copyWith(challenge: updatedChallenge));
+          final savedBest = updatedChallenge.userMoves ?? effectiveBestMoves;
+          emit(
+            state.copyWith(
+              challenge: updatedChallenge,
+              bestMoves: savedBest,
+              bestStars: BoardEngine.calculateStars(
+                userMoves: savedBest,
+                optimalMoves: updatedChallenge.optimalMoves,
+              ),
+            ),
+          );
         }
       } catch (_) {}
 
@@ -321,7 +483,6 @@ class DailyCubit extends Cubit<DailyState> {
       });
     } else {
       _hintRequestId++;
-      // Commit move synchronously before awaiting slide audio.
       emit(
         state.copyWith(
           boardState: nextBoard,
@@ -345,10 +506,13 @@ class DailyCubit extends Cubit<DailyState> {
         clearHint: true,
         isComputingHint: false,
         isWon: false,
+        isReviewMode: false,
       ),
     );
   }
 
+  /// Resets the board to the day's starting layout for a fresh attempt or Replay,
+  /// while preserving the player's saved best score & submission status.
   void reset() {
     final challenge = state.challenge;
     final currentBoard = state.boardState;
@@ -366,6 +530,8 @@ class DailyCubit extends Cubit<DailyState> {
         clearHint: true,
         isComputingHint: false,
         isWon: false,
+        isReviewMode: false,
+        hasSolvedBoardSnapshot: false,
         earnedStars: 0,
         scoreSubmitted: state.scoreSubmitted,
         clearSubmitError: true,
@@ -430,23 +596,74 @@ class DailyCubit extends Cubit<DailyState> {
   }
 
   Future<bool> submitPlayerScore(String playerName) async {
-    final currentBoard = state.boardState;
-    if (currentBoard == null ||
-        !state.isWon ||
-        currentBoard.moveCount <= 0 ||
-        state.scoreSubmitted ||
-        state.isSubmittingScore) {
+    if (state.isSubmittingScore || state.scoreSubmitted) {
       return false;
     }
-    final trimmedName = playerName.trim();
-    if (trimmedName.isEmpty) return false;
 
+    final trimmedName = playerName.trim();
     final validationError = validatePlayerName(trimmedName);
     if (validationError != null) {
       emit(
         state.copyWith(
           isSubmittingScore: false,
           submitErrorMessage: validationError,
+        ),
+      );
+      return false;
+    }
+
+    if (!state.isWon) {
+      emit(
+        state.copyWith(
+          isSubmittingScore: false,
+          submitErrorMessage:
+              'Complete today\'s Daily Challenge before submitting a score.',
+        ),
+      );
+      return false;
+    }
+
+    final challenge = state.challenge;
+    final currentBoard = state.boardState;
+
+    // Always prefer the player's best recorded solution (even after a worse Replay).
+    final List<Move> bestMoveHistory;
+    final int bestMoveCount;
+
+    final hasSavedBest =
+        challenge != null && challenge.bestMoveHistory.isNotEmpty;
+    final currentRunIsWon = currentBoard != null &&
+        currentBoard.isWon &&
+        currentBoard.moveHistory.isNotEmpty;
+    final savedBestCount = challenge?.userMoves ??
+        (hasSavedBest ? challenge.bestMoveHistory.length : null);
+
+    if (hasSavedBest &&
+        (!currentRunIsWon ||
+            (savedBestCount != null &&
+                savedBestCount <= currentBoard.moveCount))) {
+      bestMoveHistory = challenge.bestMoveHistory;
+      bestMoveCount = savedBestCount ?? challenge.bestMoveHistory.length;
+    } else if (currentRunIsWon) {
+      bestMoveHistory = currentBoard.moveHistory;
+      bestMoveCount = currentBoard.moveCount;
+    } else {
+      emit(
+        state.copyWith(
+          isSubmittingScore: false,
+          submitErrorMessage:
+              'No verified move history found. Please solve the puzzle to submit.',
+        ),
+      );
+      return false;
+    }
+
+    if (bestMoveCount <= 0 || bestMoveHistory.isEmpty) {
+      emit(
+        state.copyWith(
+          isSubmittingScore: false,
+          submitErrorMessage:
+              'No verified move history found. Please solve the puzzle to submit.',
         ),
       );
       return false;
@@ -460,32 +677,57 @@ class DailyCubit extends Cubit<DailyState> {
     );
 
     try {
-      await submitScoreUseCase(
-        playerName: trimmedName,
-        challengeDate: state.dateKey,
-        movesCount: currentBoard.moveCount,
-      );
       DailyChallenge? updatedChallenge = state.challenge;
-      try {
-        updatedChallenge =
-            await dailyRepository.markScoreSubmitted(state.dateKey) ??
-                updatedChallenge;
-      } catch (_) {}
+      final repo = dailyRepository;
+      if (repo is VerifiedDailyChallengeRepository) {
+        updatedChallenge = await repo.submitVerifiedScore(
+          playerName: trimmedName,
+          challengeDate: state.dateKey,
+          moveHistory: bestMoveHistory,
+        );
+      } else {
+        await submitScoreUseCase(
+          playerName: trimmedName,
+          challengeDate: state.dateKey,
+          movesCount: bestMoveCount,
+          moveHistory: bestMoveHistory,
+        );
+        try {
+          updatedChallenge =
+              await dailyRepository.markScoreSubmitted(state.dateKey) ??
+                  updatedChallenge;
+        } catch (_) {}
+      }
+
       if (isClosed) return false;
       emit(
         state.copyWith(
           challenge: updatedChallenge,
           isSubmittingScore: false,
           scoreSubmitted: true,
+          submittedMoves: bestMoveCount,
+          submittedPlayerName: trimmedName,
+          bestMoves: updatedChallenge?.userMoves ?? bestMoveCount,
+          clearSubmitError: true,
         ),
       );
       return true;
-    } catch (e) {
+    } on ServerException catch (e) {
       if (isClosed) return false;
       emit(
         state.copyWith(
           isSubmittingScore: false,
-          submitErrorMessage: e.toString(),
+          submitErrorMessage: e.message,
+        ),
+      );
+      return false;
+    } catch (_) {
+      if (isClosed) return false;
+      emit(
+        state.copyWith(
+          isSubmittingScore: false,
+          submitErrorMessage:
+              'Unable to submit score right now. Please try again.',
         ),
       );
       return false;

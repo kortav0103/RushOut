@@ -7,10 +7,11 @@ import 'package:rush_out/core/services/audio_service.dart';
 import 'package:rush_out/core/services/error_reporting_service.dart';
 import 'package:rush_out/data/datasources/level_asset_datasource.dart';
 import 'package:rush_out/data/datasources/supabase_remote_datasource.dart';
-import 'package:rush_out/data/models/score_model.dart';
 import 'package:rush_out/data/repositories/level_repository_impl.dart';
+import 'package:rush_out/data/repositories/daily_challenge_repository_impl.dart';
 import 'package:rush_out/domain/entities/leaderboard_entry.dart';
 import 'package:rush_out/domain/entities/level.dart';
+import 'package:rush_out/domain/entities/move.dart';
 import 'package:rush_out/domain/repositories/daily_challenge_repository.dart';
 import 'package:rush_out/domain/repositories/leaderboard_repository.dart';
 import 'package:rush_out/domain/usecases/save_progress.dart';
@@ -268,7 +269,7 @@ void main() {
       await cubit.close();
     });
 
-    test('SupabaseRemoteDataSource uses Anonymous Auth + submit_daily_score RPC and user_id scoping', () async {
+    test('SupabaseRemoteDataSource uses Anonymous Auth + submit_daily_score RPC with verified p_moves and user_id scoping', () async {
       final adapter = _RecordingHttpClientAdapter();
       final dio = Dio()..httpClientAdapter = adapter;
       final remote = SupabaseRemoteDataSource(
@@ -277,14 +278,15 @@ void main() {
         supabaseAnonKey: 'anon_public_key',
       );
 
-      await remote.submitScore(
-        const ScoreModel(
-          playerName: 'MinhAnh',
-          challengeDate: '2026-11-16',
-          movesCount: 12,
-        ),
+      await remote.submitVerifiedScore(
+        playerName: 'MinhAnh',
+        challengeDate: '2026-11-16',
+        moveHistory: const [
+          Move(vehicleId: 'B', fromRow: 1, fromCol: 3, toRow: 3, toCol: 3),
+          Move(vehicleId: 'A', fromRow: 2, fromCol: 0, toRow: 2, toCol: 4),
+        ],
       );
-      await remote.fetchDeviceProfile('inst_local_id');
+      await remote.fetchUserDailySubmission('2026-11-16');
 
       expect(adapter.requests.length, 3);
       expect(adapter.requests[0].uri.path, '/auth/v1/signup');
@@ -296,15 +298,34 @@ void main() {
       expect(adapter.requests[1].data, {
         'p_player_name': 'MinhAnh',
         'p_challenge_date': '2026-11-16',
-        'p_moves_count': 12,
+        'p_moves': [
+          {'vehicle_id': 'B', 'steps': 2, 'axis': 'v'},
+          {'vehicle_id': 'A', 'steps': 4, 'axis': 'h'},
+        ],
       });
       // Second authenticated call reuses cached session without re-calling /signup
-      expect(adapter.requests[2].uri.path, '/rest/v1/device_profiles');
+      expect(adapter.requests[2].uri.path, '/rest/v1/leaderboard_scores');
       expect(
         adapter.requests[2].queryParameters['user_id'],
         'eq.user-uuid-999',
       );
       expect(_AlwaysOnlineNetworkInfo().isConnected, completion(isTrue));
+    });
+
+    test('DailyChallengeRepositoryImpl.verifySolutionReplay rejects invalid move histories', () {
+      const board = 'oooooo'
+          'oooBoo'
+          'AAoBoo'
+          'oooooo'
+          'oooooo'
+          'oooooo';
+      expect(
+        () => DailyChallengeRepositoryImpl.verifySolutionReplay(
+          initialBoardString: board,
+          moveHistory: const [],
+        ),
+        throwsException,
+      );
     });
 
     test('ErrorReportingService scrubs bearer tokens and device identifiers', () {

@@ -3,31 +3,36 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../core/services/audio_service.dart';
 import '../../domain/repositories/daily_challenge_repository.dart';
 import '../../domain/repositories/level_repository.dart';
+import '../../domain/usecases/get_leaderboard.dart';
 import '../../domain/usecases/submit_score.dart';
 import '../bloc/daily_cubit.dart';
 import '../theme/daylight_theme.dart';
+import '../widgets/daily_win_dialog.dart';
 import '../widgets/game_controls.dart';
 import '../widgets/how_to_play_dialog.dart';
 import '../widgets/parking_board_widget.dart';
 import '../widgets/state_views.dart';
 import '../widgets/tactile_widgets.dart';
+import 'leaderboard_screen.dart';
 
 class DailyScreen extends StatefulWidget {
   final DailyChallengeRepository dailyRepository;
   final SubmitScore submitScoreUseCase;
+  final GetLeaderboard? getLeaderboardUseCase;
   final AudioService audioService;
   final LevelRepository? levelRepository;
-  final VoidCallback? onOpenLeaderboard;
   final String? defaultPlayerName;
+  final String? initialDateKey;
 
   const DailyScreen({
     super.key,
     required this.dailyRepository,
     required this.submitScoreUseCase,
+    this.getLeaderboardUseCase,
     required this.audioService,
     this.levelRepository,
-    this.onOpenLeaderboard,
     this.defaultPlayerName,
+    this.initialDateKey,
   });
 
   @override
@@ -36,335 +41,60 @@ class DailyScreen extends StatefulWidget {
 
 class _DailyScreenState extends State<DailyScreen> {
   late final DailyCubit _dailyCubit;
-  final TextEditingController _nameController = TextEditingController();
   bool _winDialogShown = false;
 
   @override
   void initState() {
     super.initState();
-    if (widget.defaultPlayerName != null &&
-        widget.defaultPlayerName!.trim().isNotEmpty) {
-      _nameController.text = widget.defaultPlayerName!.trim();
-    }
     _dailyCubit = DailyCubit(
       dailyRepository: widget.dailyRepository,
       submitScoreUseCase: widget.submitScoreUseCase,
       audioService: widget.audioService,
       levelRepository: widget.levelRepository,
+      initialDateKey: widget.initialDateKey,
     )..loadDailyChallenge();
   }
 
   @override
   void dispose() {
-    _nameController.dispose();
     _dailyCubit.close();
     super.dispose();
   }
 
-  void _showDailyWinDialog(DailyState state) {
-    if (_winDialogShown ||
-        !mounted ||
-        !state.isWon ||
-        state.boardState == null) {
-      return;
+  void _openLeaderboard() {
+    final getLeaderboard = widget.getLeaderboardUseCase;
+    if (getLeaderboard == null || !mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => LeaderboardScreen(
+          getLeaderboardUseCase: getLeaderboard,
+          initialDateKey: _dailyCubit.state.dateKey,
+        ),
+      ),
+    );
+  }
+
+  void _replayPuzzle() {
+    setState(() {
+      _winDialogShown = false;
+    });
+    _dailyCubit.reset();
+  }
+
+  void _openDailyWinDialog(DailyState state, {bool fromEscape = false}) {
+    if (!mounted || !state.isWon) return;
+    if (fromEscape) {
+      if (_winDialogShown) return;
+      _winDialogShown = true;
     }
-    _winDialogShown = true;
 
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return BlocProvider<DailyCubit>.value(
-          value: _dailyCubit,
-          child: BlocBuilder<DailyCubit, DailyState>(
-            builder: (ctx, liveState) {
-              final moves = liveState.boardState?.moveCount ?? 0;
-              final optimal = liveState.boardState?.optimalMoves ?? 0;
-              final stars = liveState.earnedStars;
-
-              return Dialog(
-                backgroundColor: DaylightColors.surfaceWhite,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(24),
-                  side: const BorderSide(
-                    color: DaylightColors.surfaceLip,
-                    width: 2,
-                  ),
-                ),
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.all(24.0),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: DaylightColors.frontierFill,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(
-                            color: DaylightColors.frontierAmber,
-                          ),
-                        ),
-                        child: Text(
-                          'DAILY CHALLENGE • ${liveState.dateKey}',
-                          style: DaylightTypography.rounded(
-                            color: DaylightColors.frontierAmberLip,
-                            fontSize: 11,
-                            fontWeight: FontWeight.w900,
-                            letterSpacing: 0.8,
-                            tabular: true,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      Text(
-                        'CHALLENGE COMPLETED!',
-                        textAlign: TextAlign.center,
-                        style: DaylightTypography.rounded(
-                          color: DaylightColors.inkPrimary,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w900,
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: List.generate(3, (i) {
-                          final earned = i < stars;
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                            child: Icon(
-                              Icons.star_rounded,
-                              color: earned
-                                  ? DaylightColors.starGold
-                                  : DaylightColors.emptyStar,
-                              size: i == 1 ? 48 : 40,
-                            ),
-                          );
-                        }),
-                      ),
-                      const SizedBox(height: 14),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 18,
-                          vertical: 10,
-                        ),
-                        decoration: BoxDecoration(
-                          color: DaylightColors.canvasBg,
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: DaylightColors.surfaceLip),
-                        ),
-                        child: Text(
-                          'Cleared in $moves moves (Optimal: $optimal)',
-                          style: DaylightTypography.rounded(
-                            color: DaylightColors.inkPrimary,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w800,
-                            tabular: true,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 18),
-                      if (!liveState.scoreSubmitted) ...[
-                        TextField(
-                          controller: _nameController,
-                          maxLength: 24,
-                          style: DaylightTypography.rounded(
-                            color: DaylightColors.inkPrimary,
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                          ),
-                          decoration: InputDecoration(
-                            labelText: 'Your Name for Leaderboard',
-                            labelStyle: DaylightTypography.rounded(
-                              color: DaylightColors.inkSecondary,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w700,
-                            ),
-                            hintText: 'Enter nickname...',
-                            hintStyle: DaylightTypography.rounded(
-                              color: DaylightColors.lockedInk,
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                            ),
-                            filled: true,
-                            fillColor: DaylightColors.canvasBg,
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: const BorderSide(
-                                color: DaylightColors.surfaceLip,
-                                width: 1.4,
-                              ),
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: const BorderSide(
-                                color: DaylightColors.frontierAmber,
-                                width: 1.8,
-                              ),
-                            ),
-                          ),
-                        ),
-                        if (liveState.submitErrorMessage != null) ...[
-                          const SizedBox(height: 4),
-                          Text(
-                            liveState.submitErrorMessage!,
-                            style: DaylightTypography.rounded(
-                              color: DaylightColors.brandRed,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                        const SizedBox(height: 10),
-                        TactileKeycap(
-                          enabled: !liveState.isSubmittingScore,
-                          onTap: liveState.isSubmittingScore
-                              ? null
-                              : () async {
-                                  final name = _nameController.text.trim();
-                                  if (name.isEmpty) return;
-                                  await _dailyCubit.submitPlayerScore(name);
-                                },
-                          surfaceColor: DaylightColors.frontierAmber,
-                          lipColor: DaylightColors.frontierAmberLip,
-                          borderRadius: 14,
-                          lipHeight: 3.5,
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              if (liveState.isSubmittingScore)
-                                const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
-                                )
-                              else
-                                const Icon(
-                                  Icons.cloud_upload_rounded,
-                                  color: Colors.white,
-                                  size: 20,
-                                ),
-                              const SizedBox(width: 8),
-                              Text(
-                                liveState.isSubmittingScore
-                                    ? 'Submitting...'
-                                    : 'Submit Score',
-                                style: DaylightTypography.rounded(
-                                  color: Colors.white,
-                                  fontSize: 14,
-                                  fontWeight: FontWeight.w900,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ] else ...[
-                        Container(
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: DaylightColors.completedMint
-                                .withValues(alpha: 0.14),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: DaylightColors.completedMint
-                                  .withValues(alpha: 0.45),
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              const Icon(
-                                Icons.check_circle_rounded,
-                                color: DaylightColors.completedMintLip,
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                'Score submitted to Leaderboard!',
-                                style: DaylightTypography.rounded(
-                                  color: DaylightColors.completedMintLip,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 16),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TactileKeycap(
-                              onTap: () {
-                                Navigator.of(dialogContext).pop();
-                                setState(() {
-                                  _winDialogShown = false;
-                                });
-                                _dailyCubit.reset();
-                              },
-                              surfaceColor: DaylightColors.canvasBg,
-                              lipColor: DaylightColors.surfaceLip,
-                              borderColor: DaylightColors.surfaceLip,
-                              borderRadius: 12,
-                              lipHeight: 3,
-                              padding: const EdgeInsets.symmetric(vertical: 11),
-                              child: Center(
-                                child: Text(
-                                  'Replay',
-                                  style: DaylightTypography.rounded(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w800,
-                                    color: DaylightColors.inkPrimary,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: TactileKeycap(
-                              onTap: () {
-                                Navigator.of(dialogContext).pop();
-                                if (widget.onOpenLeaderboard != null) {
-                                  widget.onOpenLeaderboard!();
-                                }
-                              },
-                              surfaceColor: DaylightColors.brandRed,
-                              lipColor: DaylightColors.brandRedLip,
-                              borderRadius: 12,
-                              lipHeight: 3,
-                              padding: const EdgeInsets.symmetric(vertical: 11),
-                              child: Center(
-                                child: Text(
-                                  'Leaderboard',
-                                  style: DaylightTypography.rounded(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w900,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          ),
-        );
-      },
+    DailyWinDialog.show(
+      context,
+      dailyCubit: _dailyCubit,
+      defaultPlayerName: widget.defaultPlayerName,
+      onReplay: _replayPuzzle,
+      onOpenLeaderboard:
+          widget.getLeaderboardUseCase != null ? _openLeaderboard : null,
     );
   }
 
@@ -410,7 +140,7 @@ class _DailyScreenState extends State<DailyScreen> {
                     ),
                   ),
                   Text(
-                    state.dateKey,
+                    '${state.dateKey} (UTC)',
                     style: DaylightTypography.rounded(
                       color: DaylightColors.frontierAmberLip,
                       fontSize: 12,
@@ -421,6 +151,15 @@ class _DailyScreenState extends State<DailyScreen> {
                 ],
               ),
               actions: [
+                if (widget.getLeaderboardUseCase != null)
+                  IconButton(
+                    tooltip: 'Leaderboard',
+                    icon: const Icon(
+                      Icons.emoji_events_rounded,
+                      color: DaylightColors.starGold,
+                    ),
+                    onPressed: _openLeaderboard,
+                  ),
                 IconButton(
                   tooltip: 'How to Play',
                   icon: const Icon(
@@ -467,7 +206,7 @@ class _DailyScreenState extends State<DailyScreen> {
     );
   }
 
-  /// Explicitly handles all 4 UI states: Loading (Shimmer), Content, Empty, Error (with Retry).
+  /// Explicitly handles all 4 UI states: Loading, Content, Empty, Error.
   Widget _buildBodyForState(DailyState state) {
     switch (state.status) {
       case DailyViewStatus.loading:
@@ -500,59 +239,21 @@ class _DailyScreenState extends State<DailyScreen> {
             onRetry: () => _dailyCubit.loadDailyChallenge(),
           );
         }
+
+        // Completed via server sync without a local solved board snapshot:
+        // render a clean Review summary card rather than a broken starting board.
+        if (state.isWon && !(state.hasSolvedBoardSnapshot && boardState.isWon)) {
+          return _buildSyncedCompletionCard(state);
+        }
+
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           child: Column(
             children: [
               if (state.isWon)
-                Container(
-                  width: double.infinity,
-                  margin: const EdgeInsets.only(bottom: 10),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 14,
-                    vertical: 10,
-                  ),
-                  decoration: BoxDecoration(
-                    color: DaylightColors.completedMint.withValues(alpha: 0.14),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: DaylightColors.completedMint.withValues(alpha: 0.5),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(
-                        Icons.check_circle_rounded,
-                        color: DaylightColors.completedMintLip,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          state.scoreSubmitted
-                              ? 'Completed in ${boardState.moveCount} moves • Score submitted'
-                              : 'Completed in ${boardState.moveCount} moves',
-                          style: DaylightTypography.rounded(
-                            color: DaylightColors.inkPrimary,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                      TextButton(
-                        onPressed: () => _showDailyWinDialog(_dailyCubit.state),
-                        child: Text(
-                          state.scoreSubmitted ? 'Summary' : 'Submit',
-                          style: DaylightTypography.rounded(
-                            color: DaylightColors.brandRed,
-                            fontSize: 13,
-                            fontWeight: FontWeight.w900,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+                _buildCompletedBanner(state, boardState.moveCount)
+              else if (state.bestMoves != null)
+                _buildReplayingBanner(state),
               Expanded(
                 child: Center(
                   child: ConstrainedBox(
@@ -573,8 +274,10 @@ class _DailyScreenState extends State<DailyScreen> {
                         );
                       },
                       onMoveCommitted: _dailyCubit.onVehicleDragEnd,
-                      onEscapeAnimationComplete: () =>
-                          _showDailyWinDialog(_dailyCubit.state),
+                      onEscapeAnimationComplete: () => _openDailyWinDialog(
+                        _dailyCubit.state,
+                        fromEscape: true,
+                      ),
                     ),
                   ),
                 ),
@@ -588,12 +291,7 @@ class _DailyScreenState extends State<DailyScreen> {
                   isComputingHint: state.isComputingHint,
                   remainingHints: state.remainingHints,
                   onUndo: _dailyCubit.undo,
-                  onReset: () {
-                    setState(() {
-                      _winDialogShown = false;
-                    });
-                    _dailyCubit.reset();
-                  },
+                  onReset: _replayPuzzle,
                   onHint: () async {
                     final messenger = ScaffoldMessenger.of(context);
                     final found = await _dailyCubit.requestHint();
@@ -622,5 +320,255 @@ class _DailyScreenState extends State<DailyScreen> {
           ),
         );
     }
+  }
+
+  Widget _buildCompletedBanner(DailyState state, int currentMoves) {
+    final displayMoves = state.bestMoves ?? currentMoves;
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: DaylightColors.completedMint.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: DaylightColors.completedMint.withValues(alpha: 0.5),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.check_circle_rounded,
+            color: DaylightColors.completedMintLip,
+            size: 20,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  state.scoreSubmitted
+                      ? 'Best: $displayMoves moves • Submitted'
+                      : 'Completed • Best: $displayMoves moves',
+                  style: DaylightTypography.rounded(
+                    color: DaylightColors.inkPrimary,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    tabular: true,
+                  ),
+                ),
+                Text(
+                  'Review mode — tap Replay to play again',
+                  style: DaylightTypography.rounded(
+                    color: DaylightColors.inkSecondary,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          TextButton(
+            onPressed: _replayPuzzle,
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text(
+              'Replay',
+              style: DaylightTypography.rounded(
+                color: DaylightColors.inkPrimary,
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          const SizedBox(width: 4),
+          TextButton(
+            onPressed: () => _openDailyWinDialog(_dailyCubit.state),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            child: Text(
+              state.scoreSubmitted ? 'Summary' : 'Submit',
+              style: DaylightTypography.rounded(
+                color: DaylightColors.brandRed,
+                fontSize: 13,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildReplayingBanner(DailyState state) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      decoration: BoxDecoration(
+        color: DaylightColors.frontierFill,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: DaylightColors.frontierAmber.withValues(alpha: 0.6),
+        ),
+      ),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.emoji_events_rounded,
+            color: DaylightColors.frontierAmberLip,
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              state.scoreSubmitted
+                  ? 'Replaying • Best today: ${state.bestMoves} moves • Score submitted'
+                  : 'Replaying • Best today: ${state.bestMoves} moves (preserved)',
+              style: DaylightTypography.rounded(
+                color: DaylightColors.inkPrimary,
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                tabular: true,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSyncedCompletionCard(DailyState state) {
+    final bestMoves = state.bestMoves ?? state.submittedMoves ?? 0;
+    final stars = state.bestStars;
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Container(
+            padding: const EdgeInsets.all(24),
+            decoration: BoxDecoration(
+              color: DaylightColors.surfaceWhite,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(color: DaylightColors.surfaceLip, width: 2),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.verified_rounded,
+                  color: DaylightColors.completedMintLip,
+                  size: 54,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'DAILY CHALLENGE COMPLETED',
+                  textAlign: TextAlign.center,
+                  style: DaylightTypography.rounded(
+                    color: DaylightColors.inkPrimary,
+                    fontSize: 19,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  state.dateKey,
+                  style: DaylightTypography.rounded(
+                    color: DaylightColors.frontierAmberLip,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    tabular: true,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                if (stars > 0)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(3, (i) {
+                      return Icon(
+                        Icons.star_rounded,
+                        size: i == 1 ? 44 : 36,
+                        color: i < stars
+                            ? DaylightColors.starGold
+                            : DaylightColors.emptyStar,
+                      );
+                    }),
+                  ),
+                const SizedBox(height: 14),
+                if (bestMoves > 0)
+                  Text(
+                    state.scoreSubmitted
+                        ? 'Submitted score: $bestMoves moves'
+                        : 'Best score: $bestMoves moves',
+                    style: DaylightTypography.rounded(
+                      color: DaylightColors.inkPrimary,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                      tabular: true,
+                    ),
+                  ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TactileKeycap(
+                        onTap: _replayPuzzle,
+                        surfaceColor: DaylightColors.canvasBg,
+                        lipColor: DaylightColors.surfaceLip,
+                        borderColor: DaylightColors.surfaceLip,
+                        borderRadius: 14,
+                        lipHeight: 3,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: Center(
+                          child: Text(
+                            'Replay Puzzle',
+                            style: DaylightTypography.rounded(
+                              color: DaylightColors.inkPrimary,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (widget.getLeaderboardUseCase != null) ...[
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: TactileKeycap(
+                          onTap: _openLeaderboard,
+                          surfaceColor: DaylightColors.brandRed,
+                          lipColor: DaylightColors.brandRedLip,
+                          borderRadius: 14,
+                          lipHeight: 3,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: Center(
+                            child: Text(
+                              'Leaderboard',
+                              style: DaylightTypography.rounded(
+                                color: Colors.white,
+                                fontSize: 14,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }

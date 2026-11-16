@@ -4,8 +4,19 @@ import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../../core/error/exceptions.dart';
+import '../../domain/entities/move.dart';
 import '../models/daily_challenge_model.dart';
 import '../models/score_model.dart';
+
+class UserDailySubmission {
+  final String playerName;
+  final int movesCount;
+
+  const UserDailySubmission({
+    required this.playerName,
+    required this.movesCount,
+  });
+}
 
 abstract class SecureTokenStore {
   Future<String?> read(String key);
@@ -579,17 +590,85 @@ class SupabaseRemoteDataSource {
     }
   }
 
-  /// POST /rest/v1/rpc/submit_daily_score
-  Future<void> submitScore(ScoreModel score) async {
+  /// Queries whether the currently authenticated `auth.uid()` has already
+  /// submitted a Daily Challenge score for [dateKey].
+  /// Returns `null` when no local session exists yet or no score is found.
+  Future<UserDailySubmission?> fetchUserDailySubmission(String dateKey) async {
+    if (!isConfigured) return null;
+    await loadSavedSession();
+    if (_session == null) return null;
+
+    try {
+      return await _runAuthenticated((session) async {
+        final response = await _dio.get<dynamic>(
+          '$_baseUrl/rest/v1/leaderboard_scores',
+          queryParameters: {
+            'user_id': 'eq.${session.userId}',
+            'challenge_date': 'eq.$dateKey',
+            'select': 'player_name,moves_count',
+            'limit': '1',
+          },
+          options: Options(headers: _authHeaders(session.accessToken)),
+        );
+        final data = response.data;
+        if (data is List && data.isNotEmpty) {
+          final first = data.first;
+          if (first is Map<String, dynamic>) {
+            final name = (first['player_name'] as String?)?.trim() ?? '';
+            final moves = (first['moves_count'] as num?)?.toInt();
+            if (moves != null && moves > 0) {
+              return UserDailySubmission(
+                playerName: name,
+                movesCount: moves,
+              );
+            }
+          }
+        }
+        return null;
+      });
+    } on DioException catch (e) {
+      throw ServerException(
+        _formatDioError(e, 'Failed to check Daily Challenge submission status'),
+      );
+    }
+  }
+
+  /// POST /rest/v1/rpc/submit_daily_score with server-verified `p_moves` replay.
+  Future<void> submitVerifiedScore({
+    required String playerName,
+    required String challengeDate,
+    required List<Move> moveHistory,
+  }) async {
     _ensureConfigured();
+    if (moveHistory.isEmpty) {
+      throw const ServerException(
+        'Verified move history is required to submit a Daily Challenge score.',
+      );
+    }
+
+    final pMoves = moveHistory.map((m) {
+      final isHorizontalMove = m.deltaCol != 0 && m.deltaRow == 0;
+      final isVerticalMove = m.deltaRow != 0 && m.deltaCol == 0;
+      if (!isHorizontalMove && !isVerticalMove) {
+        throw const ServerException(
+          'Cannot submit score: move history contains an invalid diagonal or zero-step move.',
+        );
+      }
+      return <String, dynamic>{
+        'vehicle_id': m.vehicleId,
+        'steps': isHorizontalMove ? m.deltaCol : m.deltaRow,
+        'axis': isHorizontalMove ? 'h' : 'v',
+      };
+    }).toList(growable: false);
+
     try {
       await _runAuthenticated((session) async {
         await _dio.post<dynamic>(
           '$_baseUrl/rest/v1/rpc/submit_daily_score',
           data: {
-            'p_player_name': score.playerName,
-            'p_challenge_date': score.challengeDate,
-            'p_moves_count': score.movesCount,
+            'p_player_name': playerName.trim(),
+            'p_challenge_date': challengeDate,
+            'p_moves': pMoves,
           },
           options: Options(headers: _authHeaders(session.accessToken)),
         );
@@ -602,6 +681,24 @@ class SupabaseRemoteDataSource {
       if (e is ServerException) rethrow;
       throw ServerException('Unexpected error submitting score: $e');
     }
+  }
+
+  /// Legacy entrypoint retained for repository compatibility; enforces verified
+  /// [moveHistory] and refuses unverified score-only submissions.
+  Future<void> submitScore(
+    ScoreModel score, {
+    List<Move>? moveHistory,
+  }) async {
+    if (moveHistory == null || moveHistory.isEmpty) {
+      throw const ServerException(
+        'Verified move history is required to submit a Daily Challenge score.',
+      );
+    }
+    return submitVerifiedScore(
+      playerName: score.playerName,
+      challengeDate: score.challengeDate,
+      moveHistory: moveHistory,
+    );
   }
 
   /// GET /rest/v1/player_profiles?user_id=eq.{auth.uid()}

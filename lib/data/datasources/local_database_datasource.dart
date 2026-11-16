@@ -15,7 +15,7 @@ typedef DatabaseOpener = Future<Database> Function(
 
 class LocalDatabaseDataSource {
   static const String _dbName = 'rush_out.db';
-  static const int _dbVersion = 4;
+  static const int _dbVersion = 5;
 
   static const String tableLevelProgress = 'level_progress';
   static const String tableDailyCache = 'daily_cache';
@@ -84,11 +84,15 @@ class LocalDatabaseDataSource {
           await db.execute('''
             CREATE TABLE $tableDailyCache (
               date_key TEXT PRIMARY KEY,
-              board_string TEXT,
-              optimal_moves INTEGER,
-              is_completed INTEGER,
+              board_string TEXT NOT NULL,
+              optimal_moves INTEGER NOT NULL,
+              is_completed INTEGER NOT NULL DEFAULT 0,
               user_moves INTEGER,
-              score_submitted INTEGER NOT NULL DEFAULT 0
+              solved_board_string TEXT,
+              best_move_history TEXT,
+              score_submitted INTEGER NOT NULL DEFAULT 0,
+              submitted_moves INTEGER,
+              submitted_player_name TEXT
             )
           ''');
           await db.execute('''
@@ -146,6 +150,32 @@ class LocalDatabaseDataSource {
                 updated_at TEXT
               )
             ''');
+          }
+          if (oldVersion < 5) {
+            await _addColumnIfMissing(
+              db,
+              table: tableDailyCache,
+              column: 'solved_board_string',
+              definition: 'TEXT',
+            );
+            await _addColumnIfMissing(
+              db,
+              table: tableDailyCache,
+              column: 'best_move_history',
+              definition: 'TEXT',
+            );
+            await _addColumnIfMissing(
+              db,
+              table: tableDailyCache,
+              column: 'submitted_moves',
+              definition: 'INTEGER',
+            );
+            await _addColumnIfMissing(
+              db,
+              table: tableDailyCache,
+              column: 'submitted_player_name',
+              definition: 'TEXT',
+            );
           }
         },
       );
@@ -326,6 +356,8 @@ class LocalDatabaseDataSource {
       );
       if (rows.isEmpty) return null;
       return DailyChallengeModel.fromCacheMap(rows.first);
+    } on CacheException {
+      rethrow;
     } catch (e) {
       throw CacheException('Failed to read cached daily challenge: $e');
     }
