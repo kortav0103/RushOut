@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../core/services/audio_service.dart';
 import '../../domain/repositories/daily_challenge_repository.dart';
+import '../../domain/repositories/level_repository.dart';
 import '../../domain/usecases/submit_score.dart';
 import '../bloc/daily_cubit.dart';
 import '../theme/daylight_theme.dart';
@@ -15,6 +16,7 @@ class DailyScreen extends StatefulWidget {
   final DailyChallengeRepository dailyRepository;
   final SubmitScore submitScoreUseCase;
   final AudioService audioService;
+  final LevelRepository? levelRepository;
   final VoidCallback? onOpenLeaderboard;
   final String? defaultPlayerName;
 
@@ -23,6 +25,7 @@ class DailyScreen extends StatefulWidget {
     required this.dailyRepository,
     required this.submitScoreUseCase,
     required this.audioService,
+    this.levelRepository,
     this.onOpenLeaderboard,
     this.defaultPlayerName,
   });
@@ -47,6 +50,7 @@ class _DailyScreenState extends State<DailyScreen> {
       dailyRepository: widget.dailyRepository,
       submitScoreUseCase: widget.submitScoreUseCase,
       audioService: widget.audioService,
+      levelRepository: widget.levelRepository,
     )..loadDailyChallenge();
   }
 
@@ -58,7 +62,12 @@ class _DailyScreenState extends State<DailyScreen> {
   }
 
   void _showDailyWinDialog(DailyState state) {
-    if (_winDialogShown || !mounted || state.boardState == null) return;
+    if (_winDialogShown ||
+        !mounted ||
+        !state.isWon ||
+        state.boardState == null) {
+      return;
+    }
     _winDialogShown = true;
 
     showDialog<void>(
@@ -531,7 +540,7 @@ class _DailyScreenState extends State<DailyScreen> {
                         ),
                       ),
                       TextButton(
-                        onPressed: () => _showDailyWinDialog(state),
+                        onPressed: () => _showDailyWinDialog(_dailyCubit.state),
                         child: Text(
                           state.scoreSubmitted ? 'Summary' : 'Submit',
                           style: DaylightTypography.rounded(
@@ -553,9 +562,19 @@ class _DailyScreenState extends State<DailyScreen> {
                       activeHint: state.activeHint,
                       isWon: state.isWon,
                       audioService: widget.audioService,
+                      onDragStart: (vehicleId) {
+                        final bounds =
+                            _dailyCubit.onVehicleDragStart(vehicleId);
+                        return (
+                          minRow: bounds.minRow,
+                          maxRow: bounds.maxRow,
+                          minCol: bounds.minCol,
+                          maxCol: bounds.maxCol,
+                        );
+                      },
                       onMoveCommitted: _dailyCubit.onVehicleDragEnd,
                       onEscapeAnimationComplete: () =>
-                          _showDailyWinDialog(state),
+                          _showDailyWinDialog(_dailyCubit.state),
                     ),
                   ),
                 ),

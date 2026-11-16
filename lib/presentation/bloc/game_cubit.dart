@@ -13,6 +13,7 @@ import '../../domain/entities/board_state.dart';
 import '../../domain/entities/level.dart';
 import '../../domain/entities/move.dart';
 import '../../domain/entities/vehicle.dart';
+import '../../domain/repositories/level_repository.dart';
 import '../../domain/solver/bfs_solver.dart';
 import '../../domain/usecases/save_progress.dart';
 
@@ -150,25 +151,55 @@ class GameCubit extends Cubit<GameState> {
   static const String _inProgressPrefix = 'rush_out_in_progress_level_';
 
   final SaveProgress? saveProgressUseCase;
+  final LevelRepository? levelRepository;
   final AudioService audioService;
   final TutorialService? tutorialService;
+  final Future<Move?> Function(BoardState board)? hintSolver;
+
+  int _hintRequestId = 0;
+  bool _hintsMutatedLocally = false;
 
   GameCubit({
     required Level level,
     required this.audioService,
     this.saveProgressUseCase,
+    LevelRepository? levelRepository,
     this.tutorialService,
+    this.hintSolver,
     bool isTutorialMode = false,
-  }) : super(
+  })  : levelRepository = levelRepository ?? saveProgressUseCase?.repository,
+        super(
           _createInitialState(
             level: level,
             audioService: audioService,
             isTutorialMode: isTutorialMode,
           ),
         ) {
+    _loadRemainingHints();
     if (!isTutorialMode) {
       _restoreInProgressState(level);
     }
+  }
+
+  Future<void> _loadRemainingHints() async {
+    final repo = levelRepository;
+    if (repo == null) return;
+    try {
+      final persisted = await repo.getRemainingHints();
+      if (isClosed || _hintsMutatedLocally) return;
+      emit(state.copyWith(remainingHints: persisted));
+    } catch (_) {}
+  }
+
+  Future<void> _persistHintDelta(int delta) async {
+    final repo = levelRepository;
+    if (repo == null || delta == 0) return;
+    try {
+      final updated = await repo.updateRemainingHints(delta);
+      if (!isClosed) {
+        emit(state.copyWith(remainingHints: updated));
+      }
+    } catch (_) {}
   }
 
   static BoardState _safeParseBoard(String boardString, int optimalMoves) {
@@ -284,6 +315,7 @@ class GameCubit extends Cubit<GameState> {
   }
 
   void loadLevel(Level newLevel, {bool isTutorialMode = false}) {
+    _hintRequestId++;
     final parsedState = _safeParseBoard(
       newLevel.boardString,
       newLevel.optimalMoves,
@@ -361,8 +393,17 @@ class GameCubit extends Cubit<GameState> {
   /// Computes valid movement bounds without emitting any BLoC state.
   MovementBounds onVehicleDragStart(String vehicleId) {
     audioService.playCarSelect();
-    if (state.boardState.getVehicleById(vehicleId) == null) {
+    final vehicle = state.boardState.getVehicleById(vehicleId);
+    if (vehicle == null) {
       return const MovementBounds(minRow: 0, maxRow: 0, minCol: 0, maxCol: 0);
+    }
+    if (state.isWon) {
+      return MovementBounds(
+        minRow: vehicle.row,
+        maxRow: vehicle.row,
+        minCol: vehicle.col,
+        maxCol: vehicle.col,
+      );
     }
     return BoardEngine.getMovementBounds(state.boardState, vehicleId);
   }
@@ -419,6 +460,10 @@ class GameCubit extends Cubit<GameState> {
       );
 
       final bonusHint = (stars == 3 && currentLevel.stars < 3) ? 1 : 0;
+      if (bonusHint > 0) {
+        _hintsMutatedLocally = true;
+      }
+      _hintRequestId++;
 
       // Commit state synchronously before awaiting audio/persistence so concurrent
       // multi-touch drags never read stale BoardState and drop/overwrite moves.
@@ -427,14 +472,12 @@ class GameCubit extends Cubit<GameState> {
           level: updatedLevel,
           boardState: nextBoard,
           clearHint: true,
+          isComputingHint: false,
           isWon: true,
           earnedStars: stars,
           remainingHints: state.remainingHints + bonusHint,
         ),
       );
-
-      await audioService.playSlide();
-      if (isClosed) return;
 
       if (saveProgressUseCase != null && currentLevel.id > 0) {
         try {
@@ -447,7 +490,14 @@ class GameCubit extends Cubit<GameState> {
         } catch (_) {}
       }
 
+      if (bonusHint > 0) {
+        await _persistHintDelta(bonusHint);
+      }
+
       await _clearInProgressState(currentLevel.id);
+      if (isClosed) return;
+
+      await audioService.playSlide();
       if (isClosed) return;
 
       await audioService.playWin();
@@ -457,11 +507,13 @@ class GameCubit extends Cubit<GameState> {
         }
       });
     } else {
+      _hintRequestId++;
       // Commit move synchronously before any await to prevent concurrent drag races.
       emit(
         state.copyWith(
           boardState: nextBoard,
           clearHint: true,
+          isComputingHint: false,
         ),
       );
 
@@ -578,6 +630,7 @@ class GameCubit extends Cubit<GameState> {
 
   void undo() {
     if (!state.canUndo) return;
+    _hintRequestId++;
     final prevBoard = BoardEngine.undo(state.boardState);
     audioService.playUndoWhoosh();
     _saveInProgressState(state.level.id, prevBoard);
@@ -585,6 +638,7 @@ class GameCubit extends Cubit<GameState> {
       state.copyWith(
         boardState: prevBoard,
         clearHint: true,
+        isComputingHint: false,
         isWon: false,
         earnedStars: 0,
       ),
@@ -592,6 +646,7 @@ class GameCubit extends Cubit<GameState> {
   }
 
   void reset() {
+    _hintRequestId++;
     final resetBoard = BoardEngine.reset(
       state.boardState,
       initialBoardString: state.initialBoardString,
@@ -606,6 +661,7 @@ class GameCubit extends Cubit<GameState> {
           boardState: resetBoard,
           activeHint: firstMove,
           clearHint: firstMove == null,
+          isComputingHint: false,
           tutorialStepIndex: 0,
           isWon: false,
           earnedStars: 0,
@@ -617,6 +673,7 @@ class GameCubit extends Cubit<GameState> {
       state.copyWith(
         boardState: resetBoard,
         clearHint: true,
+        isComputingHint: false,
         isWon: false,
         earnedStars: 0,
       ),
@@ -631,24 +688,43 @@ class GameCubit extends Cubit<GameState> {
       return true;
     }
 
-    emit(state.copyWith(isComputingHint: true));
+    final requestId = ++_hintRequestId;
     final snapshot = state.boardState;
+    final snapshotLevelId = state.level.id;
+    emit(state.copyWith(isComputingHint: true));
 
-    final hintMove = await Isolate.run(
-      () => BfsSolver.findNextMove(snapshot, maxVisitedStates: 100000),
-    );
+    final hintMove = await (hintSolver != null
+        ? hintSolver!(snapshot)
+        : Isolate.run(
+            () => BfsSolver.findNextMove(snapshot, maxVisitedStates: 100000),
+          ));
 
     if (isClosed) return true;
 
+    // Guard against async race: ignore stale result if user moved, undid, reset,
+    // switched levels, or already won while BFS was running.
+    if (_hintRequestId != requestId ||
+        state.isTutorialMode ||
+        state.isWon ||
+        state.level.id != snapshotLevelId ||
+        state.boardState != snapshot) {
+      if (state.isComputingHint && _hintRequestId == requestId) {
+        emit(state.copyWith(isComputingHint: false));
+      }
+      return true;
+    }
+
     if (hintMove != null) {
+      _hintsMutatedLocally = true;
       audioService.playHintPing();
       emit(
         state.copyWith(
           activeHint: hintMove,
           isComputingHint: false,
-          remainingHints: state.remainingHints - 1,
+          remainingHints: math.max(0, state.remainingHints - 1),
         ),
       );
+      await _persistHintDelta(-1);
       return true;
     } else {
       emit(state.copyWith(isComputingHint: false));

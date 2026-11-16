@@ -243,7 +243,7 @@ class _GameScreenState extends State<GameScreen> {
   }
 
   void _handleEscapeComplete(GameState state) {
-    if (!mounted) return;
+    if (!mounted || !state.isWon) return;
     _showWinModal(state, isTutorialComplete: state.isTutorialMode);
   }
 
@@ -694,9 +694,19 @@ class _GameScreenState extends State<GameScreen> {
                                     onLockedVehicleTapped: state.isTutorialMode
                                         ? _onLockedVehicleTapped
                                         : null,
+                                    onDragStart: (vehicleId) {
+                                      final bounds = _gameCubit
+                                          .onVehicleDragStart(vehicleId);
+                                      return (
+                                        minRow: bounds.minRow,
+                                        maxRow: bounds.maxRow,
+                                        minCol: bounds.minCol,
+                                        maxCol: bounds.maxCol,
+                                      );
+                                    },
                                     onMoveCommitted: _gameCubit.onVehicleDragEnd,
                                     onEscapeAnimationComplete: () =>
-                                        _handleEscapeComplete(state),
+                                        _handleEscapeComplete(_gameCubit.state),
                                   );
                                 },
                               ),

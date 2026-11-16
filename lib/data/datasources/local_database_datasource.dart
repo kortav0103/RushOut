@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:math' as math;
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 import '../../core/error/exceptions.dart';
@@ -13,10 +15,12 @@ typedef DatabaseOpener = Future<Database> Function(
 
 class LocalDatabaseDataSource {
   static const String _dbName = 'rush_out.db';
-  static const int _dbVersion = 2;
+  static const int _dbVersion = 3;
 
   static const String tableLevelProgress = 'level_progress';
   static const String tableDailyCache = 'daily_cache';
+  static const String tableAppWallet = 'app_wallet';
+  static const String hintBalanceKey = 'remaining_hints';
 
   final DatabasesPathProvider _getDatabasesPath;
   final DatabaseOpener _openDatabase;
@@ -24,6 +28,7 @@ class LocalDatabaseDataSource {
 
   Database? _database;
   Future<Database>? _openingDatabase;
+  Future<void> _walletQueue = Future<void>.value();
 
   LocalDatabaseDataSource({
     DatabasesPathProvider? getDatabasesPathFn,
@@ -83,6 +88,12 @@ class LocalDatabaseDataSource {
               score_submitted INTEGER NOT NULL DEFAULT 0
             )
           ''');
+          await db.execute('''
+            CREATE TABLE $tableAppWallet (
+              wallet_key TEXT PRIMARY KEY,
+              int_value INTEGER NOT NULL
+            )
+          ''');
         },
         onUpgrade: (db, oldVersion, newVersion) async {
           if (oldVersion < 2) {
@@ -98,6 +109,14 @@ class LocalDatabaseDataSource {
               column: 'score_submitted',
               definition: 'INTEGER NOT NULL DEFAULT 0',
             );
+          }
+          if (oldVersion < 3) {
+            await db.execute('''
+              CREATE TABLE IF NOT EXISTS $tableAppWallet (
+                wallet_key TEXT PRIMARY KEY,
+                int_value INTEGER NOT NULL
+              )
+            ''');
           }
         },
       );
@@ -210,6 +229,61 @@ class LocalDatabaseDataSource {
     } catch (e) {
       throw CacheException('Failed to cache daily challenge: $e');
     }
+  }
+
+  Future<int?> getWalletValue(String key) async {
+    final db = await database;
+    try {
+      final rows = await db.query(
+        tableAppWallet,
+        where: 'wallet_key = ?',
+        whereArgs: [key],
+        limit: 1,
+      );
+      if (rows.isEmpty) return null;
+      return rows.first['int_value'] as int?;
+    } catch (e) {
+      throw CacheException('Failed to read wallet value for $key: $e');
+    }
+  }
+
+  Future<void> setWalletValue(String key, int value) async {
+    final db = await database;
+    try {
+      await db.insert(
+        tableAppWallet,
+        {'wallet_key': key, 'int_value': value},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    } catch (e) {
+      throw CacheException('Failed to save wallet value for $key: $e');
+    }
+  }
+
+  Future<T> _enqueueWalletOp<T>(Future<T> Function() action) {
+    final completer = Completer<T>();
+    _walletQueue = _walletQueue.then((_) async {
+      try {
+        completer.complete(await action());
+      } catch (e, st) {
+        completer.completeError(e, st);
+      }
+    });
+    return completer.future;
+  }
+
+  Future<int> adjustWalletValue(
+    String key, {
+    required int defaultValue,
+    required int delta,
+    int minValue = 0,
+  }) {
+    return _enqueueWalletOp(() async {
+      final current = await getWalletValue(key) ?? defaultValue;
+      final next = math.max(minValue, current + delta);
+      await setWalletValue(key, next);
+      return next;
+    });
   }
 
   Future<void> close() async {

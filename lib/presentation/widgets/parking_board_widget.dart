@@ -12,9 +12,8 @@ class ParkingBoardWidget extends StatefulWidget {
   final Move? activeHint;
   final bool isWon;
   final Set<String>? unlockedVehicleIds;
-  final ({int minRow, int maxRow, int minCol, int maxCol})? Function(
-    Vehicle vehicle,
-  )? customDragBounds;
+  final VehicleDragBounds Function(String vehicleId)? onDragStart;
+  final VehicleDragBounds? Function(Vehicle vehicle)? customDragBounds;
   final ({int row, int col, int length, bool isHorizontal})? tutorialTargetSlot;
   final AudioService? audioService;
   final VoidCallback? onLockedVehicleTapped;
@@ -31,6 +30,7 @@ class ParkingBoardWidget extends StatefulWidget {
     this.activeHint,
     this.isWon = false,
     this.unlockedVehicleIds,
+    this.onDragStart,
     this.customDragBounds,
     this.tutorialTargetSlot,
     this.audioService,
@@ -44,9 +44,9 @@ class ParkingBoardWidget extends StatefulWidget {
 }
 
 class _ParkingBoardWidgetState extends State<ParkingBoardWidget>
-    with SingleTickerProviderStateMixin {
-  bool _escapeScheduled = false;
+    with TickerProviderStateMixin {
   late final AnimationController _hintPulseController;
+  late final AnimationController _escapeController;
 
   @override
   void initState() {
@@ -55,26 +55,31 @@ class _ParkingBoardWidgetState extends State<ParkingBoardWidget>
       vsync: this,
       duration: const Duration(milliseconds: 900),
     )..repeat(reverse: true);
+    _escapeController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 520),
+    )..addStatusListener((status) {
+        if (status == AnimationStatus.completed && mounted && widget.isWon) {
+          widget.onEscapeAnimationComplete?.call();
+        }
+      });
   }
 
   @override
   void didUpdateWidget(covariant ParkingBoardWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.isWon && !oldWidget.isWon && !_escapeScheduled) {
-      _escapeScheduled = true;
-      Future.delayed(const Duration(milliseconds: 520), () {
-        if (mounted) {
-          widget.onEscapeAnimationComplete?.call();
-        }
-      });
-    } else if (!widget.isWon) {
-      _escapeScheduled = false;
+    if (widget.isWon && !oldWidget.isWon) {
+      _escapeController.forward(from: 0.0);
+    } else if (!widget.isWon && oldWidget.isWon) {
+      _escapeController.stop();
+      _escapeController.reset();
     }
   }
 
   @override
   void dispose() {
     _hintPulseController.dispose();
+    _escapeController.dispose();
     super.dispose();
   }
 
@@ -223,7 +228,9 @@ class _ParkingBoardWidgetState extends State<ParkingBoardWidget>
     final isLocked = widget.unlockedVehicleIds != null &&
         !widget.unlockedVehicleIds!.contains(vehicle.id);
 
-    final effectiveCol = (widget.isWon && vehicle.isTarget)
+    final isEscapingTarget =
+        widget.isWon && widget.boardState.isWon && vehicle.isTarget;
+    final effectiveCol = isEscapingTarget
         ? AppConstants.targetEscapeCol.toDouble()
         : vehicle.col.toDouble();
     final left = effectiveCol * cellSize;
@@ -236,6 +243,7 @@ class _ParkingBoardWidgetState extends State<ParkingBoardWidget>
       isHinted: isHinted,
       isWon: widget.isWon,
       isLocked: isLocked,
+      onDragStart: widget.onDragStart,
       customDragBounds: widget.customDragBounds,
       audioService: widget.audioService,
       onLockedTap: isLocked ? widget.onLockedVehicleTapped : null,
@@ -243,7 +251,7 @@ class _ParkingBoardWidgetState extends State<ParkingBoardWidget>
     );
 
     // Only animate layout position when target car escapes out the exit gate on win
-    if (widget.isWon && vehicle.isTarget) {
+    if (isEscapingTarget) {
       return AnimatedPositioned(
         key: ValueKey('veh_${vehicle.id}'),
         duration: const Duration(milliseconds: 450),

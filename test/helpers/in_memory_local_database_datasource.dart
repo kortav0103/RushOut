@@ -6,6 +6,7 @@ import 'package:rush_out/data/models/daily_challenge_model.dart';
 class InMemoryLocalDatabaseDataSource extends LocalDatabaseDataSource {
   final Map<int, Map<String, dynamic>> _levelProgress = {};
   final Map<String, Map<String, dynamic>> _dailyCache = {};
+  final Map<String, int> _wallet = {};
 
   @override
   Future<Map<int, Map<String, dynamic>>> getAllLevelProgress() async {
@@ -48,5 +49,13 @@ class InMemoryLocalDatabaseDataSource extends LocalDatabaseDataSource {
   @override
   Future<void> saveDailyChallengeCache(DailyChallengeModel challenge) async {
     _dailyCache[challenge.dateKey] = challenge.toCacheMap();
+  }
+
+  @override
+  Future<int?> getWalletValue(String key) async => _wallet[key];
+
+  @override
+  Future<void> setWalletValue(String key, int value) async {
+    _wallet[key] = value;
   }
 }

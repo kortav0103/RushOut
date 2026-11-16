@@ -2,9 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/services/audio_service.dart';
-import '../../domain/engine/board_engine.dart';
 import '../../domain/entities/board_state.dart';
 import '../../domain/entities/vehicle.dart';
+
+typedef VehicleDragBounds = ({int minRow, int maxRow, int minCol, int maxCol});
 
 class VehicleWidget extends StatefulWidget {
   final Vehicle vehicle;
@@ -13,9 +14,8 @@ class VehicleWidget extends StatefulWidget {
   final bool isHinted;
   final bool isWon;
   final bool isLocked;
-  final ({int minRow, int maxRow, int minCol, int maxCol})? Function(
-    Vehicle vehicle,
-  )? customDragBounds;
+  final VehicleDragBounds Function(String vehicleId)? onDragStart;
+  final VehicleDragBounds? Function(Vehicle vehicle)? customDragBounds;
   final AudioService? audioService;
   final VoidCallback? onLockedTap;
   final Future<void> Function(
@@ -32,6 +32,7 @@ class VehicleWidget extends StatefulWidget {
     this.isHinted = false,
     this.isWon = false,
     this.isLocked = false,
+    this.onDragStart,
     this.customDragBounds,
     this.audioService,
     this.onLockedTap,
@@ -108,18 +109,27 @@ class _VehicleWidgetState extends State<VehicleWidget>
       });
   }
 
+  void _resetDragState() {
+    _snapController.stop();
+    _snapAnimation = null;
+    _dragOffsetPx.value = 0.0;
+    _shakeOffsetPx.value = 0.0;
+    _isDragging.value = false;
+    _hitMinBoundary = false;
+    _hitMaxBoundary = false;
+  }
+
   @override
   void didUpdateWidget(covariant VehicleWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // When BoardState updates the vehicle's grid cell (after snap commit, Undo, or Reset),
-    // immediately zero out the local pixel translation so the widget stays at the exact pixel.
-    if (widget.vehicle.row != oldWidget.vehicle.row ||
+    // Cancel any active local drag whenever the board state reference changes,
+    // the board enters won state, or the vehicle's grid cell updates.
+    if ((widget.isWon && !oldWidget.isWon) ||
+        widget.isWon ||
+        !identical(widget.boardState, oldWidget.boardState) ||
+        widget.vehicle.row != oldWidget.vehicle.row ||
         widget.vehicle.col != oldWidget.vehicle.col) {
-      _snapController.stop();
-      _snapAnimation = null;
-      _dragOffsetPx.value = 0.0;
-      _shakeOffsetPx.value = 0.0;
-      _isDragging.value = false;
+      _resetDragState();
     }
   }
 
@@ -134,10 +144,7 @@ class _VehicleWidgetState extends State<VehicleWidget>
   }
 
   void _triggerCollisionFeedback() {
-    try {
-      HapticFeedback.lightImpact();
-    } catch (_) {}
-    widget.audioService?.playSfx(AppConstants.sfxHornCollide);
+    widget.audioService?.playHornCollide();
     _shakeController.forward(from: 0.0);
   }
 
@@ -158,10 +165,16 @@ class _VehicleWidgetState extends State<VehicleWidget>
     _snapController.stop();
     _snapAnimation = null;
 
-    final boardBounds = BoardEngine.getMovementBounds(
-      widget.boardState,
-      widget.vehicle.id,
-    );
+    final boardBounds = widget.onDragStart?.call(widget.vehicle.id) ??
+        (
+          minRow: widget.vehicle.row,
+          maxRow: widget.vehicle.row,
+          minCol: widget.vehicle.col,
+          maxCol: widget.vehicle.col,
+        );
+    if (widget.onDragStart == null) {
+      widget.audioService?.playCarSelect();
+    }
     final custom = widget.customDragBounds?.call(widget.vehicle);
     final minCol = custom != null
         ? custom.minCol.clamp(boardBounds.minCol, boardBounds.maxCol)
@@ -187,7 +200,6 @@ class _VehicleWidgetState extends State<VehicleWidget>
     _hitMinBoundary = false;
     _hitMaxBoundary = false;
     _isDragging.value = true;
-    widget.audioService?.playCarSelect();
   }
 
   void _onPanUpdate(DragUpdateDetails details) {
@@ -261,7 +273,7 @@ class _VehicleWidgetState extends State<VehicleWidget>
       _dragOffsetPx.value = targetOffsetPx;
     }
 
-    if (!mounted) return;
+    if (!mounted || widget.isWon) return;
 
     // Only call BLoC after the 100ms snap animation completes and the grid cell changed
     if (finalCell != startCell) {
@@ -280,6 +292,7 @@ class _VehicleWidgetState extends State<VehicleWidget>
 
       // If parent rejected the move (e.g. incomplete tutorial drag), reset pixel offset
       if (mounted &&
+          !widget.isWon &&
           widget.vehicle.row == startRow &&
           widget.vehicle.col == startCol &&
           _dragOffsetPx.value != 0.0) {

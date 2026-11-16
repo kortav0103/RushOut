@@ -132,5 +132,67 @@ void main() {
         }
       }
     });
+
+    test('persists app_wallet hint quota across disk instances and serializes concurrent updates', () async {
+      sqfliteFfiInit();
+      final tempDir = await Directory.systemTemp.createTemp('rush_out_wallet_test_');
+
+      Future<Database> openFfiDb(
+        String path, {
+        int? version,
+        OnDatabaseCreateFn? onCreate,
+        OnDatabaseVersionChangeFn? onUpgrade,
+      }) {
+        return databaseFactoryFfi.openDatabase(
+          path,
+          options: OpenDatabaseOptions(
+            version: version,
+            onCreate: onCreate,
+            onUpgrade: onUpgrade,
+          ),
+        );
+      }
+
+      try {
+        final ds1 = LocalDatabaseDataSource(
+          getDatabasesPathFn: () async => tempDir.path,
+          openDatabaseFn: openFfiDb,
+        );
+
+        final results = await Future.wait([
+          ds1.adjustWalletValue(
+            LocalDatabaseDataSource.hintBalanceKey,
+            defaultValue: 3,
+            delta: -1,
+          ),
+          ds1.adjustWalletValue(
+            LocalDatabaseDataSource.hintBalanceKey,
+            defaultValue: 3,
+            delta: -1,
+          ),
+          ds1.adjustWalletValue(
+            LocalDatabaseDataSource.hintBalanceKey,
+            defaultValue: 3,
+            delta: 1,
+          ),
+        ]);
+        expect(results, [2, 1, 2]);
+        await ds1.close();
+
+        final ds2 = LocalDatabaseDataSource(
+          getDatabasesPathFn: () async => tempDir.path,
+          openDatabaseFn: openFfiDb,
+        );
+        expect(
+          await ds2.getWalletValue(LocalDatabaseDataSource.hintBalanceKey),
+          2,
+        );
+        await ds2.close();
+      } finally {
+        if (await tempDir.exists()) {
+          await tempDir.delete(recursive: true);
+        }
+      }
+    });
   });
 }

@@ -1,4 +1,5 @@
 import 'dart:isolate';
+import 'dart:math' as math;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../core/error/exceptions.dart';
@@ -10,6 +11,7 @@ import '../../domain/entities/board_state.dart';
 import '../../domain/entities/leaderboard_entry.dart';
 import '../../domain/entities/move.dart';
 import '../../domain/repositories/daily_challenge_repository.dart';
+import '../../domain/repositories/level_repository.dart';
 import '../../domain/solver/bfs_solver.dart';
 import '../../domain/usecases/submit_score.dart';
 
@@ -108,11 +110,17 @@ class DailyCubit extends Cubit<DailyState> {
   final DailyChallengeRepository dailyRepository;
   final SubmitScore submitScoreUseCase;
   final AudioService audioService;
+  final LevelRepository? levelRepository;
+  final Future<Move?> Function(BoardState board)? hintSolver;
+
+  int _hintRequestId = 0;
 
   DailyCubit({
     required this.dailyRepository,
     required this.submitScoreUseCase,
     required this.audioService,
+    this.levelRepository,
+    this.hintSolver,
     String? initialDateKey,
   }) : super(
           DailyState(
@@ -136,7 +144,10 @@ class DailyCubit extends Cubit<DailyState> {
       PlayerIdentityService.validateUsername(rawName);
 
   Future<void> loadDailyChallenge({String? dateKey}) async {
+    _hintRequestId++;
     final targetDate = dateKey ?? state.dateKey;
+    final preservedHints =
+        targetDate == state.dateKey ? state.remainingHints : 3;
     emit(
       state.copyWith(
         status: DailyViewStatus.loading,
@@ -144,7 +155,7 @@ class DailyCubit extends Cubit<DailyState> {
         clearError: true,
         clearHint: true,
         isComputingHint: false,
-        remainingHints: 3,
+        remainingHints: preservedHints,
         isWon: false,
         earnedStars: 0,
         scoreSubmitted: false,
@@ -153,12 +164,20 @@ class DailyCubit extends Cubit<DailyState> {
     );
 
     try {
+      int? persistedHints;
+      if (levelRepository != null) {
+        try {
+          persistedHints = await levelRepository!.getRemainingHints();
+        } catch (_) {}
+      }
+
       final challenge = await dailyRepository.getDailyChallenge(targetDate);
       if (isClosed) return;
       if (challenge.boardString.trim().isEmpty) {
         emit(
           state.copyWith(
             status: DailyViewStatus.empty,
+            remainingHints: persistedHints ?? state.remainingHints,
             errorMessage: 'No Daily Challenge is available for $targetDate.',
           ),
         );
@@ -182,6 +201,7 @@ class DailyCubit extends Cubit<DailyState> {
             status: DailyViewStatus.content,
             challenge: challenge,
             boardState: parsedBoard.copyWith(moveCount: solvedMoves),
+            remainingHints: persistedHints ?? state.remainingHints,
             isWon: true,
             earnedStars: stars,
             scoreSubmitted: challenge.scoreSubmitted,
@@ -195,6 +215,7 @@ class DailyCubit extends Cubit<DailyState> {
           status: DailyViewStatus.content,
           challenge: challenge,
           boardState: parsedBoard,
+          remainingHints: persistedHints ?? state.remainingHints,
           isWon: false,
           earnedStars: 0,
           scoreSubmitted: challenge.scoreSubmitted,
@@ -219,6 +240,28 @@ class DailyCubit extends Cubit<DailyState> {
     }
   }
 
+  /// Computes valid movement bounds without emitting any BLoC state.
+  MovementBounds onVehicleDragStart(String vehicleId) {
+    audioService.playCarSelect();
+    final currentBoard = state.boardState;
+    if (currentBoard == null) {
+      return const MovementBounds(minRow: 0, maxRow: 0, minCol: 0, maxCol: 0);
+    }
+    final vehicle = currentBoard.getVehicleById(vehicleId);
+    if (vehicle == null) {
+      return const MovementBounds(minRow: 0, maxRow: 0, minCol: 0, maxCol: 0);
+    }
+    if (state.isWon) {
+      return MovementBounds(
+        minRow: vehicle.row,
+        maxRow: vehicle.row,
+        minCol: vehicle.col,
+        maxCol: vehicle.col,
+      );
+    }
+    return BoardEngine.getMovementBounds(currentBoard, vehicleId);
+  }
+
   Future<void> onVehicleDragEnd(
     String vehicleId, {
     required double draggedRow,
@@ -238,6 +281,7 @@ class DailyCubit extends Cubit<DailyState> {
     if (nextBoard.moveCount <= prevMoves) return;
 
     if (nextBoard.isWon) {
+      _hintRequestId++;
       final stars = BoardEngine.calculateStars(
         userMoves: nextBoard.moveCount,
         optimalMoves: nextBoard.optimalMoves,
@@ -249,6 +293,7 @@ class DailyCubit extends Cubit<DailyState> {
         state.copyWith(
           boardState: nextBoard,
           clearHint: true,
+          isComputingHint: false,
           isWon: true,
           earnedStars: stars,
         ),
@@ -275,11 +320,13 @@ class DailyCubit extends Cubit<DailyState> {
         }
       });
     } else {
+      _hintRequestId++;
       // Commit move synchronously before awaiting slide audio.
       emit(
         state.copyWith(
           boardState: nextBoard,
           clearHint: true,
+          isComputingHint: false,
         ),
       );
       await audioService.playSlide();
@@ -289,12 +336,14 @@ class DailyCubit extends Cubit<DailyState> {
   void undo() {
     final currentBoard = state.boardState;
     if (currentBoard == null || !state.canUndo) return;
+    _hintRequestId++;
     final prevBoard = BoardEngine.undo(currentBoard);
     audioService.playUndoWhoosh();
     emit(
       state.copyWith(
         boardState: prevBoard,
         clearHint: true,
+        isComputingHint: false,
         isWon: false,
       ),
     );
@@ -305,6 +354,7 @@ class DailyCubit extends Cubit<DailyState> {
     final currentBoard = state.boardState;
     if (challenge == null || currentBoard == null) return;
 
+    _hintRequestId++;
     final resetBoard = BoardEngine.reset(
       currentBoard,
       initialBoardString: challenge.boardString,
@@ -314,6 +364,7 @@ class DailyCubit extends Cubit<DailyState> {
       state.copyWith(
         boardState: resetBoard,
         clearHint: true,
+        isComputingHint: false,
         isWon: false,
         earnedStars: 0,
         scoreSubmitted: state.scoreSubmitted,
@@ -331,14 +382,28 @@ class DailyCubit extends Cubit<DailyState> {
       return true;
     }
 
-    emit(state.copyWith(isComputingHint: true));
+    final requestId = ++_hintRequestId;
     final snapshot = currentBoard;
+    final snapshotDateKey = state.dateKey;
+    emit(state.copyWith(isComputingHint: true));
 
-    final hintMove = await Isolate.run(
-      () => BfsSolver.findNextMove(snapshot, maxVisitedStates: 100000),
-    );
+    final hintMove = await (hintSolver != null
+        ? hintSolver!(snapshot)
+        : Isolate.run(
+            () => BfsSolver.findNextMove(snapshot, maxVisitedStates: 100000),
+          ));
 
     if (isClosed) return true;
+
+    if (_hintRequestId != requestId ||
+        state.isWon ||
+        state.dateKey != snapshotDateKey ||
+        state.boardState != snapshot) {
+      if (state.isComputingHint && _hintRequestId == requestId) {
+        emit(state.copyWith(isComputingHint: false));
+      }
+      return true;
+    }
 
     if (hintMove != null) {
       audioService.playHintPing();
@@ -346,9 +411,17 @@ class DailyCubit extends Cubit<DailyState> {
         state.copyWith(
           activeHint: hintMove,
           isComputingHint: false,
-          remainingHints: state.remainingHints - 1,
+          remainingHints: math.max(0, state.remainingHints - 1),
         ),
       );
+      if (levelRepository != null) {
+        try {
+          final updated = await levelRepository!.updateRemainingHints(-1);
+          if (!isClosed) {
+            emit(state.copyWith(remainingHints: updated));
+          }
+        } catch (_) {}
+      }
       return true;
     } else {
       emit(state.copyWith(isComputingHint: false));

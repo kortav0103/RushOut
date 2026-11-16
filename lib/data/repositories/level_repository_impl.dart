@@ -5,6 +5,8 @@ import '../datasources/local_database_datasource.dart';
 import '../models/level_model.dart';
 
 class LevelRepositoryImpl implements LevelRepository {
+  static const int defaultInitialHints = 3;
+
   final LevelAssetDataSource assetDataSource;
   final LocalDatabaseDataSource localDataSource;
   final Future<void> Function()? onProgressChanged;
@@ -127,5 +129,23 @@ class LevelRepositoryImpl implements LevelRepository {
     }
 
     onProgressChanged?.call();
+  }
+
+  @override
+  Future<int> getRemainingHints() async {
+    final stored = await localDataSource.getWalletValue(
+      LocalDatabaseDataSource.hintBalanceKey,
+    );
+    return stored ?? defaultInitialHints;
+  }
+
+  @override
+  Future<int> updateRemainingHints(int delta) {
+    return localDataSource.adjustWalletValue(
+      LocalDatabaseDataSource.hintBalanceKey,
+      defaultValue: defaultInitialHints,
+      delta: delta,
+      minValue: 0,
+    );
   }
 }

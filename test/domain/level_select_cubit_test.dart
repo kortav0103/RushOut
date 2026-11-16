@@ -27,6 +27,12 @@ class _FakeLevelRepository implements LevelRepository {
     required int levelId,
     required Difficulty difficulty,
   }) async {}
+
+  @override
+  Future<int> getRemainingHints() async => 3;
+
+  @override
+  Future<int> updateRemainingHints(int delta) async => 3 + delta;
 }
 
 class _FakeAssetDataSource extends LevelAssetDataSource {

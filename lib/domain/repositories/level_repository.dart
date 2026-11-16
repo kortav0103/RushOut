@@ -17,4 +17,11 @@ abstract class LevelRepository {
     required int levelId,
     required Difficulty difficulty,
   });
+
+  /// Returns the persisted remaining hint quota (defaults to 3 for new players).
+  Future<int> getRemainingHints();
+
+  /// Atomically applies [delta] (e.g. -1 on hint use, +1 on first 3-star win)
+  /// to the persisted hint wallet (clamped to >= 0) and returns the updated balance.
+  Future<int> updateRemainingHints(int delta);
 }
