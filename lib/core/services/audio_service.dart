@@ -6,9 +6,12 @@ import 'haptic_service.dart';
 
 class AudioService with WidgetsBindingObserver {
   static const String _mutePrefKey = 'rush_out_is_muted';
+  static const int _sfxPoolSize = 4;
 
   AudioPlayer? _bgmPlayer;
-  AudioPlayer? _sfxPlayer;
+  final List<AudioPlayer> _sfxPool = [];
+  int _sfxPoolIndex = 0;
+
   final HapticService _hapticService;
   final bool _enablePlatformAudio;
 
@@ -42,13 +45,18 @@ class AudioService with WidgetsBindingObserver {
 
     try {
       _bgmPlayer = AudioPlayer();
-      _sfxPlayer = AudioPlayer();
       await _bgmPlayer!.setReleaseMode(ReleaseMode.loop);
       await _bgmPlayer!.setVolume(_isMuted ? 0.0 : 0.3);
-      await _sfxPlayer!.setVolume(_isMuted ? 0.0 : 0.8);
+
+      for (int i = 0; i < _sfxPoolSize; i++) {
+        final sfx = AudioPlayer();
+        await sfx.setReleaseMode(ReleaseMode.stop);
+        await sfx.setVolume(_isMuted ? 0.0 : 0.8);
+        _sfxPool.add(sfx);
+      }
     } catch (_) {
       _bgmPlayer = null;
-      _sfxPlayer = null;
+      _sfxPool.clear();
     }
   }
 
@@ -104,26 +112,30 @@ class AudioService with WidgetsBindingObserver {
       await prefs.setBool(_mutePrefKey, _isMuted);
     } catch (_) {}
 
-    if (_bgmPlayer != null && _sfxPlayer != null) {
-      try {
+    try {
+      if (_bgmPlayer != null) {
         await _bgmPlayer!.setVolume(_isMuted ? 0.0 : 0.3);
-        await _sfxPlayer!.setVolume(_isMuted ? 0.0 : 0.8);
         if (_isMuted) {
           await _bgmPlayer!.pause();
         } else {
           await resumeBgm();
         }
-      } catch (_) {}
-    }
+      }
+      for (final sfx in _sfxPool) {
+        await sfx.setVolume(_isMuted ? 0.0 : 0.8);
+      }
+    } catch (_) {}
     return _isMuted;
   }
 
   Future<void> playSfx(String assetRelativePath) async {
-    if (_isMuted || _sfxPlayer == null) return;
+    if (_isMuted || _sfxPool.isEmpty) return;
     try {
       final cleaned = assetRelativePath.replaceFirst(RegExp(r'^assets/'), '');
-      await _sfxPlayer!.stop();
-      await _sfxPlayer!.play(AssetSource(cleaned), volume: 0.8);
+      final player = _sfxPool[_sfxPoolIndex];
+      _sfxPoolIndex = (_sfxPoolIndex + 1) % _sfxPool.length;
+      await player.stop();
+      await player.play(AssetSource(cleaned), volume: 0.8);
     } catch (_) {}
   }
 
@@ -140,9 +152,7 @@ class AudioService with WidgetsBindingObserver {
 
   Future<void> playHintPing() => playSfx(AppConstants.sfxHintPing);
 
-  Future<void> playWin() async {
-    await playSfx(AppConstants.sfxWin);
-  }
+  Future<void> playWin() => playSfx(AppConstants.sfxWin);
 
   Future<void> playStarPop() => playSfx(AppConstants.sfxStarPop);
 
@@ -151,6 +161,9 @@ class AudioService with WidgetsBindingObserver {
       WidgetsBinding.instance.removeObserver(this);
     } catch (_) {}
     await _bgmPlayer?.dispose();
-    await _sfxPlayer?.dispose();
+    for (final sfx in _sfxPool) {
+      await sfx.dispose();
+    }
+    _sfxPool.clear();
   }
 }

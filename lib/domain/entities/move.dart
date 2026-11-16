@@ -37,6 +37,24 @@ class Move extends Equatable {
         toCol: fromCol,
       );
 
+  Map<String, dynamic> toJson() => {
+        'id': vehicleId,
+        'fromRow': fromRow,
+        'fromCol': fromCol,
+        'toRow': toRow,
+        'toCol': toCol,
+      };
+
+  factory Move.fromJson(Map<String, dynamic> json) {
+    return Move(
+      vehicleId: json['id'] as String,
+      fromRow: (json['fromRow'] as num).toInt(),
+      fromCol: (json['fromCol'] as num).toInt(),
+      toRow: (json['toRow'] as num).toInt(),
+      toCol: (json['toCol'] as num).toInt(),
+    );
+  }
+
   @override
   List<Object?> get props => [vehicleId, fromRow, fromCol, toRow, toCol];
 

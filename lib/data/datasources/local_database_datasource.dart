@@ -1,17 +1,19 @@
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
-import '../models/score_model.dart';
+import '../../core/error/exceptions.dart';
+import '../models/daily_challenge_model.dart';
 
 class LocalDatabaseDataSource {
   static const String _dbName = 'rush_out.db';
-  static const int _dbVersion = 1;
+  static const int _dbVersion = 2;
 
   static const String tableLevelProgress = 'level_progress';
   static const String tableDailyCache = 'daily_cache';
 
   Database? _database;
 
-  // Fallback in-memory storage if SQLite is unavailable on desktop/test environment
+  // Fallback in-memory storage only when SQLite plugin is unavailable (e.g. unit tests)
   final Map<int, Map<String, dynamic>> _memoryLevelProgress = {};
   final Map<String, Map<String, dynamic>> _memoryDailyCache = {};
 
@@ -30,7 +32,8 @@ class LocalDatabaseDataSource {
               difficulty TEXT,
               best_moves INTEGER,
               stars INTEGER,
-              is_unlocked INTEGER
+              is_unlocked INTEGER,
+              updated_at TEXT
             )
           ''');
           await db.execute('''
@@ -39,14 +42,53 @@ class LocalDatabaseDataSource {
               board_string TEXT,
               optimal_moves INTEGER,
               is_completed INTEGER,
-              user_moves INTEGER
+              user_moves INTEGER,
+              score_submitted INTEGER NOT NULL DEFAULT 0
             )
           ''');
         },
+        onUpgrade: (db, oldVersion, newVersion) async {
+          if (oldVersion < 2) {
+            await _addColumnIfMissing(
+              db,
+              table: tableLevelProgress,
+              column: 'updated_at',
+              definition: 'TEXT',
+            );
+            await _addColumnIfMissing(
+              db,
+              table: tableDailyCache,
+              column: 'score_submitted',
+              definition: 'INTEGER NOT NULL DEFAULT 0',
+            );
+          }
+        },
       );
       return _database;
-    } catch (_) {
+    } on MissingPluginException {
       return null;
+    } on UnimplementedError {
+      return null;
+    } on StateError catch (e) {
+      if (e.message.contains('databaseFactory')) {
+        return null;
+      }
+      throw CacheException('Failed to open local database: $e');
+    } catch (e) {
+      throw CacheException('Failed to open local database: $e');
+    }
+  }
+
+  static Future<void> _addColumnIfMissing(
+    Database db, {
+    required String table,
+    required String column,
+    required String definition,
+  }) async {
+    final columns = await db.rawQuery('PRAGMA table_info($table)');
+    final exists = columns.any((row) => row['name'] == column);
+    if (!exists) {
+      await db.execute('ALTER TABLE $table ADD COLUMN $column $definition');
     }
   }
 
@@ -65,8 +107,8 @@ class LocalDatabaseDataSource {
         }
       }
       return result;
-    } catch (_) {
-      return Map<int, Map<String, dynamic>>.from(_memoryLevelProgress);
+    } catch (e) {
+      throw CacheException('Failed to read level progress: $e');
     }
   }
 
@@ -84,8 +126,8 @@ class LocalDatabaseDataSource {
       );
       if (rows.isEmpty) return null;
       return Map<String, dynamic>.from(rows.first);
-    } catch (_) {
-      return _memoryLevelProgress[levelId];
+    } catch (e) {
+      throw CacheException('Failed to read progress for level $levelId: $e');
     }
   }
 
@@ -102,18 +144,24 @@ class LocalDatabaseDataSource {
       'best_moves': bestMoves,
       'stars': stars,
       'is_unlocked': isUnlocked ? 1 : 0,
+      'updated_at': DateTime.now().toUtc().toIso8601String(),
     };
-    _memoryLevelProgress[levelId] = data;
 
     final db = await database;
-    if (db == null) return;
+    if (db == null) {
+      _memoryLevelProgress[levelId] = data;
+      return;
+    }
     try {
       await db.insert(
         tableLevelProgress,
         data,
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
-    } catch (_) {}
+      _memoryLevelProgress[levelId] = data;
+    } catch (e) {
+      throw CacheException('Failed to save progress for level $levelId: $e');
+    }
   }
 
   Future<DailyChallengeModel?> getCachedDailyChallenge(String dateKey) async {
@@ -131,24 +179,28 @@ class LocalDatabaseDataSource {
       );
       if (rows.isEmpty) return null;
       return DailyChallengeModel.fromCacheMap(rows.first);
-    } catch (_) {
-      final mem = _memoryDailyCache[dateKey];
-      return mem != null ? DailyChallengeModel.fromCacheMap(mem) : null;
+    } catch (e) {
+      throw CacheException('Failed to read cached daily challenge: $e');
     }
   }
 
   Future<void> saveDailyChallengeCache(DailyChallengeModel challenge) async {
     final map = challenge.toCacheMap();
-    _memoryDailyCache[challenge.dateKey] = map;
 
     final db = await database;
-    if (db == null) return;
+    if (db == null) {
+      _memoryDailyCache[challenge.dateKey] = map;
+      return;
+    }
     try {
       await db.insert(
         tableDailyCache,
         map,
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
-    } catch (_) {}
+      _memoryDailyCache[challenge.dateKey] = map;
+    } catch (e) {
+      throw CacheException('Failed to cache daily challenge: $e');
+    }
   }
 }

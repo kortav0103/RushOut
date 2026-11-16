@@ -1,3 +1,4 @@
+import 'dart:isolate';
 import 'package:flutter/services.dart' show rootBundle;
 import '../../core/constants/app_constants.dart';
 import '../../core/utils/level_parser.dart';
@@ -11,7 +12,9 @@ class LevelAssetDataSource {
       return _cachedLevels!;
     }
     final rawText = await rootBundle.loadString(AppConstants.levelsFilePath);
-    _cachedLevels = LevelParser.parseCampaignLevels(rawText);
+    _cachedLevels = await Isolate.run(
+      () => LevelParser.parseCampaignLevels(rawText),
+    );
     return _cachedLevels!;
   }
 }

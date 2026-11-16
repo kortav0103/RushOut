@@ -31,6 +31,7 @@ class DailyChallenge extends Equatable {
   final int optimalMoves;
   final bool isCompleted;
   final int? userMoves;
+  final bool scoreSubmitted;
 
   const DailyChallenge({
     required this.dateKey,
@@ -38,6 +39,7 @@ class DailyChallenge extends Equatable {
     required this.optimalMoves,
     this.isCompleted = false,
     this.userMoves,
+    this.scoreSubmitted = false,
   });
 
   DailyChallenge copyWith({
@@ -46,6 +48,7 @@ class DailyChallenge extends Equatable {
     int? optimalMoves,
     bool? isCompleted,
     int? userMoves,
+    bool? scoreSubmitted,
   }) {
     return DailyChallenge(
       dateKey: dateKey ?? this.dateKey,
@@ -53,6 +56,7 @@ class DailyChallenge extends Equatable {
       optimalMoves: optimalMoves ?? this.optimalMoves,
       isCompleted: isCompleted ?? this.isCompleted,
       userMoves: userMoves ?? this.userMoves,
+      scoreSubmitted: scoreSubmitted ?? this.scoreSubmitted,
     );
   }
 
@@ -63,5 +67,6 @@ class DailyChallenge extends Equatable {
         optimalMoves,
         isCompleted,
         userMoves,
+        scoreSubmitted,
       ];
 }

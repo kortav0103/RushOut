@@ -9,9 +9,10 @@ import 'package:rush_out/data/repositories/leaderboard_repository_impl.dart';
 import 'package:rush_out/data/repositories/level_repository_impl.dart';
 import 'package:rush_out/domain/usecases/get_levels.dart';
 import 'package:rush_out/domain/usecases/save_progress.dart';
+import 'package:rush_out/domain/usecases/get_leaderboard.dart';
 import 'package:rush_out/domain/usecases/submit_score.dart';
 import 'package:rush_out/core/network/network_info.dart';
-import 'package:rush_out/main.dart';
+import 'package:rush_out/app/rush_out_app.dart';
 
 class _FakeNetworkInfo implements NetworkInfo {
   @override
@@ -57,5 +58,14 @@ void main() {
     expect(find.text('DAILY CHALLENGE'), findsOneWidget);
     expect(find.text('LEADERBOARD'), findsOneWidget);
     expect(find.byIcon(Icons.help_outline_rounded), findsOneWidget);
+    expect(find.byIcon(Icons.settings_rounded), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.settings_rounded));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Settings'), findsOneWidget);
+    expect(find.text('Sound & Music'), findsOneWidget);
+    expect(find.text('Replay Tutorial'), findsOneWidget);
+    expect(find.text('Privacy Policy & Terms'), findsOneWidget);
   });
 }

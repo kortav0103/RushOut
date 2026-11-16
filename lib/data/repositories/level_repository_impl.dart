@@ -7,10 +7,12 @@ import '../models/level_model.dart';
 class LevelRepositoryImpl implements LevelRepository {
   final LevelAssetDataSource assetDataSource;
   final LocalDatabaseDataSource localDataSource;
+  final Future<void> Function()? onProgressChanged;
 
   const LevelRepositoryImpl({
     required this.assetDataSource,
     required this.localDataSource,
+    this.onProgressChanged,
   });
 
   @override
@@ -24,12 +26,11 @@ class LevelRepositoryImpl implements LevelRepository {
       final row = progressMap[base.id];
       var model = LevelModel.fromProgressMap(base, row);
 
-      // Ensure first level of each difficulty tier is unlocked by default,
-      // or if the preceding level was cleared (stars > 0)
-      final isFirstInDifficulty =
-          base.id == 1 || base.id == 11 || base.id == 21;
+      // Strict linear progression: Level #1 starts unlocked,
+      // and completing Level #N unlocks Level #N+1.
+      final isFirstLevel = i == 0;
       final prevCleared = i > 0 && merged[i - 1].stars > 0;
-      if ((isFirstInDifficulty || prevCleared) && !model.isUnlocked) {
+      if ((isFirstLevel || prevCleared) && !model.isUnlocked) {
         model = LevelModel(
           id: model.id,
           difficulty: model.difficulty,
@@ -76,7 +77,7 @@ class LevelRepositoryImpl implements LevelRepository {
       isUnlocked: true,
     );
 
-    // Unlock the next level in campaign (up to level 30)
+    // Unlock the next level in campaign
     final baseLevels = await assetDataSource.loadBaseCampaignLevels();
     final nextId = levelId + 1;
     final nextLevel = baseLevels.where((l) => l.id == nextId).firstOrNull;
@@ -90,5 +91,41 @@ class LevelRepositoryImpl implements LevelRepository {
         isUnlocked: true,
       );
     }
+
+    onProgressChanged?.call();
+  }
+
+  @override
+  Future<void> skipLevel({
+    required int levelId,
+    required Difficulty difficulty,
+  }) async {
+    final existing = await localDataSource.getLevelProgress(levelId);
+    final oldBestMoves = existing?['best_moves'] as int?;
+    final oldStars = (existing?['stars'] as int?) ?? 0;
+
+    await localDataSource.upsertLevelProgress(
+      levelId: levelId,
+      difficulty: difficulty.name,
+      bestMoves: oldBestMoves,
+      stars: oldStars,
+      isUnlocked: true,
+    );
+
+    final baseLevels = await assetDataSource.loadBaseCampaignLevels();
+    final nextId = levelId + 1;
+    final nextLevel = baseLevels.where((l) => l.id == nextId).firstOrNull;
+    if (nextLevel != null) {
+      final nextExisting = await localDataSource.getLevelProgress(nextId);
+      await localDataSource.upsertLevelProgress(
+        levelId: nextId,
+        difficulty: nextLevel.difficulty.name,
+        bestMoves: nextExisting?['best_moves'] as int?,
+        stars: (nextExisting?['stars'] as int?) ?? 0,
+        isUnlocked: true,
+      );
+    }
+
+    onProgressChanged?.call();
   }
 }

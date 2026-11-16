@@ -10,4 +10,7 @@ abstract class DailyChallengeRepository {
     required String dateKey,
     required int userMoves,
   });
+
+  /// Marks the daily challenge score for [dateKey] as submitted to the leaderboard.
+  Future<DailyChallenge?> markScoreSubmitted(String dateKey);
 }

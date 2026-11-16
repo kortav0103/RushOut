@@ -18,8 +18,8 @@ class AppConstants {
   static const int mediumMaxMoves = 18;
   static const int hardMinMoves = 19;
   static const int hardMaxMoves = 25;
-  static const int levelsPerDifficulty = 10;
-  static const int totalCampaignLevels = 30;
+  static const int levelsPerDifficulty = 1350;
+  static const int totalCampaignLevels = 4050;
 
   // Asset Paths
   static const String levelsFilePath = 'assets/levels/rush1000.txt';

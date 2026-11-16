@@ -103,7 +103,7 @@ void main() {
     });
 
     test(
-      'parses assets/levels/rush1000.txt into 30 levels (10 Easy, 10 Medium, 10 Hard) without walls',
+      'parses assets/levels/rush1000.txt into 4050 levels (1350 Easy, 1350 Medium, 1350 Hard) without walls',
       () {
         final file = File('assets/levels/rush1000.txt');
         expect(file.existsSync(), isTrue);
@@ -111,7 +111,7 @@ void main() {
         final content = file.readAsStringSync();
         final levels = LevelParser.parseCampaignLevels(content);
 
-        expect(levels.length, 30);
+        expect(levels.length, 4050);
 
         final easyLevels =
             levels.where((l) => l.difficulty == Difficulty.easy).toList();
@@ -120,9 +120,9 @@ void main() {
         final hardLevels =
             levels.where((l) => l.difficulty == Difficulty.hard).toList();
 
-        expect(easyLevels.length, 10);
-        expect(mediumLevels.length, 10);
-        expect(hardLevels.length, 10);
+        expect(easyLevels.length, 1350);
+        expect(mediumLevels.length, 1350);
+        expect(hardLevels.length, 1350);
 
         for (final level in easyLevels) {
           expect(level.optimalMoves, inInclusiveRange(5, 10));

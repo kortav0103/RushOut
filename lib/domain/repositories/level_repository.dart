@@ -11,4 +11,10 @@ abstract class LevelRepository {
     required int userMoves,
     required int stars,
   });
+
+  /// Marks a level as skipped (0 stars if not previously cleared) and unlocks the next level.
+  Future<void> skipLevel({
+    required int levelId,
+    required Difficulty difficulty,
+  });
 }

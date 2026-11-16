@@ -1,105 +1,112 @@
-import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
-import 'core/network/network_info.dart';
-import 'core/services/audio_service.dart';
-import 'data/datasources/level_asset_datasource.dart';
-import 'data/datasources/local_database_datasource.dart';
-import 'data/datasources/supabase_remote_datasource.dart';
-import 'data/repositories/daily_challenge_repository_impl.dart';
-import 'data/repositories/leaderboard_repository_impl.dart';
-import 'data/repositories/level_repository_impl.dart';
-import 'domain/repositories/daily_challenge_repository.dart';
-import 'domain/usecases/get_levels.dart';
-import 'domain/usecases/save_progress.dart';
-import 'domain/usecases/submit_score.dart';
-import 'presentation/screens/home_screen.dart';
+import 'app/app_dependencies.dart';
+import 'app/rush_out_app.dart';
+import 'core/services/error_reporting_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    ErrorReportingService.instance.recordError(
+      details.exception,
+      details.stack ?? StackTrace.current,
+      fatal: true,
+      context: details.context?.toDescription() ?? 'FlutterError',
+    );
+  };
+
+  PlatformDispatcher.instance.onError = (error, stack) {
+    ErrorReportingService.instance.recordError(
+      error,
+      stack,
+      fatal: true,
+      context: 'PlatformDispatcher',
+    );
+    return true;
+  };
+
   try {
-    await dotenv.load(fileName: '.env');
-  } catch (_) {
-    // Graceful fallback if .env is not yet configured
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+    ]);
+  } catch (_) {}
+
+  await _loadEnv();
+
+  try {
+    final deps = await AppDependencies.init();
+    runApp(RushOutApp.fromDependencies(deps));
+  } catch (e, stack) {
+    ErrorReportingService.instance.recordError(
+      e,
+      stack,
+      fatal: true,
+      context: 'AppDependencies.init',
+    );
+    runApp(const _BootstrapErrorApp());
   }
-
-  final audioService = AudioService();
-  await audioService.init();
-
-  final networkInfo = NetworkInfoImpl(Connectivity());
-  final assetDataSource = LevelAssetDataSource();
-  final localDataSource = LocalDatabaseDataSource();
-  final remoteDataSource = SupabaseRemoteDataSource();
-
-  final levelRepository = LevelRepositoryImpl(
-    assetDataSource: assetDataSource,
-    localDataSource: localDataSource,
-  );
-  final dailyRepository = DailyChallengeRepositoryImpl(
-    remoteDataSource: remoteDataSource,
-    localDataSource: localDataSource,
-    networkInfo: networkInfo,
-  );
-  final leaderboardRepository = LeaderboardRepositoryImpl(
-    remoteDataSource: remoteDataSource,
-    networkInfo: networkInfo,
-  );
-
-  final getLevelsUseCase = GetLevels(levelRepository);
-  final saveProgressUseCase = SaveProgress(levelRepository);
-  final submitScoreUseCase = SubmitScore(leaderboardRepository);
-  final getLeaderboardUseCase = GetLeaderboard(leaderboardRepository);
-
-  runApp(
-    RushOutApp(
-      audioService: audioService,
-      getLevelsUseCase: getLevelsUseCase,
-      saveProgressUseCase: saveProgressUseCase,
-      dailyRepository: dailyRepository,
-      submitScoreUseCase: submitScoreUseCase,
-      getLeaderboardUseCase: getLeaderboardUseCase,
-    ),
-  );
 }
 
-class RushOutApp extends StatelessWidget {
-  final AudioService audioService;
-  final GetLevels getLevelsUseCase;
-  final SaveProgress saveProgressUseCase;
-  final DailyChallengeRepository dailyRepository;
-  final SubmitScore submitScoreUseCase;
-  final GetLeaderboard getLeaderboardUseCase;
+Future<void> _loadEnv() async {
+  // Compile-time --dart-define / --dart-define-from-file=.env takes precedence in
+  // SupabaseRemoteDataSource. Only fall back to .env.example if available.
+  try {
+    await dotenv.load(fileName: '.env.example');
+  } catch (_) {
+    // Graceful fallback when no dotenv asset is used.
+  }
+}
 
-  const RushOutApp({
-    super.key,
-    required this.audioService,
-    required this.getLevelsUseCase,
-    required this.saveProgressUseCase,
-    required this.dailyRepository,
-    required this.submitScoreUseCase,
-    required this.getLeaderboardUseCase,
-  });
+class _BootstrapErrorApp extends StatelessWidget {
+  const _BootstrapErrorApp();
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'RushOut',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFE53935),
-          brightness: Brightness.dark,
+      home: Scaffold(
+        body: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.error_outline_rounded, size: 48, color: Colors.red),
+                const SizedBox(height: 16),
+                const Text(
+                  'Unable to start RushOut',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                const Text(
+                  'Please restart the app. If the problem persists, try reinstalling.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  onPressed: () async {
+                    try {
+                      final deps = await AppDependencies.init();
+                      runApp(RushOutApp.fromDependencies(deps));
+                    } catch (e, stack) {
+                      ErrorReportingService.instance.recordError(
+                        e,
+                        stack,
+                        fatal: false,
+                        context: 'BootstrapRetry',
+                      );
+                    }
+                  },
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
+          ),
         ),
-        useMaterial3: true,
-      ),
-      home: HomeScreen(
-        audioService: audioService,
-        getLevelsUseCase: getLevelsUseCase,
-        saveProgressUseCase: saveProgressUseCase,
-        dailyRepository: dailyRepository,
-        submitScoreUseCase: submitScoreUseCase,
-        getLeaderboardUseCase: getLeaderboardUseCase,
       ),
     );
   }

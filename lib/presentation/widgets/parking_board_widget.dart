@@ -11,7 +11,13 @@ class ParkingBoardWidget extends StatefulWidget {
   final BoardState boardState;
   final Move? activeHint;
   final bool isWon;
+  final Set<String>? unlockedVehicleIds;
+  final ({int minRow, int maxRow, int minCol, int maxCol})? Function(
+    Vehicle vehicle,
+  )? customDragBounds;
+  final ({int row, int col, int length, bool isHorizontal})? tutorialTargetSlot;
   final AudioService? audioService;
+  final VoidCallback? onLockedVehicleTapped;
   final Future<void> Function(
     String vehicleId, {
     required double draggedRow,
@@ -24,7 +30,11 @@ class ParkingBoardWidget extends StatefulWidget {
     required this.boardState,
     this.activeHint,
     this.isWon = false,
+    this.unlockedVehicleIds,
+    this.customDragBounds,
+    this.tutorialTargetSlot,
     this.audioService,
+    this.onLockedVehicleTapped,
     required this.onMoveCommitted,
     this.onEscapeAnimationComplete,
   });
@@ -75,9 +85,15 @@ class _ParkingBoardWidgetState extends State<ParkingBoardWidget>
       child: LayoutBuilder(
         builder: (context, constraints) {
           final boardSize = constraints.maxWidth;
+          if (!boardSize.isFinite || boardSize <= 0) {
+            return const SizedBox.shrink();
+          }
           final wallThickness = boardSize * 0.045;
           final innerSize = boardSize - (wallThickness * 2);
           final cellSize = innerSize / AppConstants.gridSize;
+          if (cellSize <= 0) {
+            return const SizedBox.shrink();
+          }
 
           return Container(
             decoration: BoxDecoration(
@@ -114,6 +130,12 @@ class _ParkingBoardWidgetState extends State<ParkingBoardWidget>
                     child: Stack(
                       clipBehavior: Clip.none,
                       children: [
+                        if (widget.tutorialTargetSlot != null)
+                          _buildTutorialTargetHighlight(
+                            slot: widget.tutorialTargetSlot!,
+                            cellSize: cellSize,
+                          ),
+
                         for (final vehicle in widget.boardState.vehicles)
                           _buildVehiclePositioned(
                             vehicle: vehicle,
@@ -156,11 +178,50 @@ class _ParkingBoardWidgetState extends State<ParkingBoardWidget>
     );
   }
 
+  Widget _buildTutorialTargetHighlight({
+    required ({int row, int col, int length, bool isHorizontal}) slot,
+    required double cellSize,
+  }) {
+    final left = slot.col * cellSize + 3;
+    final top = slot.row * cellSize + 3;
+    final width =
+        (slot.isHorizontal ? slot.length * cellSize : cellSize) - 6;
+    final height =
+        (slot.isHorizontal ? cellSize : slot.length * cellSize) - 6;
+
+    return Positioned(
+      left: left,
+      top: top,
+      width: width,
+      height: height,
+      child: IgnorePointer(
+        child: AnimatedBuilder(
+          animation: _hintPulseController,
+          builder: (context, _) {
+            final alpha = 0.25 + (_hintPulseController.value * 0.35);
+            return Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFFF4D4D).withValues(alpha: alpha * 0.55),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: const Color(0xFFFF9F1C).withValues(alpha: alpha + 0.3),
+                  width: 2.5,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   Widget _buildVehiclePositioned({
     required Vehicle vehicle,
     required double cellSize,
   }) {
     final isHinted = widget.activeHint?.vehicleId == vehicle.id;
+    final isLocked = widget.unlockedVehicleIds != null &&
+        !widget.unlockedVehicleIds!.contains(vehicle.id);
 
     final effectiveCol = (widget.isWon && vehicle.isTarget)
         ? AppConstants.targetEscapeCol.toDouble()
@@ -174,7 +235,10 @@ class _ParkingBoardWidgetState extends State<ParkingBoardWidget>
       cellSize: cellSize,
       isHinted: isHinted,
       isWon: widget.isWon,
+      isLocked: isLocked,
+      customDragBounds: widget.customDragBounds,
       audioService: widget.audioService,
+      onLockedTap: isLocked ? widget.onLockedVehicleTapped : null,
       onMoveCommitted: widget.onMoveCommitted,
     );
 
@@ -183,10 +247,15 @@ class _ParkingBoardWidgetState extends State<ParkingBoardWidget>
       return AnimatedPositioned(
         key: ValueKey('veh_${vehicle.id}'),
         duration: const Duration(milliseconds: 450),
-        curve: Curves.easeInBack,
+        curve: Curves.easeInCubic,
         left: left,
         top: top,
-        child: child,
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 420),
+          curve: Curves.easeIn,
+          opacity: 0.0,
+          child: child,
+        ),
       );
     }
 
@@ -258,7 +327,7 @@ class ParkingLotPainter extends CustomPainter {
       }
     }
 
-    // Highlight exit lane on row = 2
+    // Highlight exit lane on row = 2 (main escape corridor)
     final exitLaneRect = Rect.fromLTWH(
       wallThickness,
       wallThickness + AppConstants.exitRow * cellSize,
@@ -266,8 +335,42 @@ class ParkingLotPainter extends CustomPainter {
       cellSize,
     );
     final exitLanePaint = Paint()
-      ..color = const Color(0xFFE53935).withValues(alpha: 0.06);
+      ..color = const Color(0xFFFFCA28).withValues(alpha: 0.11);
     canvas.drawRect(exitLaneRect, exitLanePaint);
+
+    // Top & bottom lane guide lines along row = 2
+    final laneGuidePaint = Paint()
+      ..color = const Color(0xFFFFCA28).withValues(alpha: 0.45)
+      ..strokeWidth = 1.6
+      ..style = PaintingStyle.stroke;
+    canvas.drawLine(
+      Offset(wallThickness, exitLaneRect.top),
+      Offset(size.width - wallThickness, exitLaneRect.top),
+      laneGuidePaint,
+    );
+    canvas.drawLine(
+      Offset(wallThickness, exitLaneRect.bottom),
+      Offset(size.width - wallThickness, exitLaneRect.bottom),
+      laneGuidePaint,
+    );
+
+    // Subtle directional chevrons along the exit lane
+    final laneArrowMidY = exitLaneRect.top + cellSize * 0.5;
+    final stepChevronSize = cellSize * 0.11;
+    final stepChevronPaint = Paint()
+      ..color = const Color(0xFFFFCA28).withValues(alpha: 0.22)
+      ..strokeWidth = 2.0
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+    for (int c = 0; c < AppConstants.gridSize - 1; c++) {
+      final cx = wallThickness + (c + 0.5) * cellSize;
+      final p = Path()
+        ..moveTo(cx - stepChevronSize * 0.4, laneArrowMidY - stepChevronSize * 0.7)
+        ..lineTo(cx + stepChevronSize * 0.4, laneArrowMidY)
+        ..lineTo(cx - stepChevronSize * 0.4, laneArrowMidY + stepChevronSize * 0.7);
+      canvas.drawPath(p, stepChevronPaint);
+    }
 
     // 3. Concrete Border Walls (#5C626A) with open exit bay on right side of row = 2
     final wallPaint = Paint()..color = const Color(0xFF5C626A);
@@ -335,6 +438,48 @@ class ParkingLotPainter extends CustomPainter {
       );
     }
     canvas.restore();
+
+    // 5. Crisp right-pointing Exit Chevron on the exit lane (last cell) & exit bay
+    final laneArrowX = size.width - wallThickness - cellSize * 0.28;
+    final laneArrowY = exitTop + cellSize * 0.5;
+    final chevronSize = cellSize * 0.14;
+    final laneChevronPaint = Paint()
+      ..color = const Color(0xFFFFCA28).withValues(alpha: 0.35)
+      ..strokeWidth = 2.4
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..style = PaintingStyle.stroke;
+
+    for (final offset in [-chevronSize * 0.75, 0.0]) {
+      final path = Path()
+        ..moveTo(laneArrowX + offset - chevronSize * 0.45, laneArrowY - chevronSize * 0.65)
+        ..lineTo(laneArrowX + offset + chevronSize * 0.35, laneArrowY)
+        ..lineTo(laneArrowX + offset - chevronSize * 0.45, laneArrowY + chevronSize * 0.65);
+      canvas.drawPath(path, laneChevronPaint);
+    }
+
+    // Center badge arrow on the hazard exit bay itself
+    final bayCenter = Offset(size.width - wallThickness * 0.5, laneArrowY);
+    final badgeRadius = wallThickness * 0.38;
+    canvas.drawCircle(
+      bayCenter,
+      badgeRadius,
+      Paint()..color = const Color(0xFF1E2022).withValues(alpha: 0.9),
+    );
+    final bayArrowSize = badgeRadius * 0.55;
+    final bayArrowPath = Path()
+      ..moveTo(bayCenter.dx - bayArrowSize * 0.45, bayCenter.dy - bayArrowSize * 0.85)
+      ..lineTo(bayCenter.dx + bayArrowSize * 0.55, bayCenter.dy)
+      ..lineTo(bayCenter.dx - bayArrowSize * 0.45, bayCenter.dy + bayArrowSize * 0.85);
+    canvas.drawPath(
+      bayArrowPath,
+      Paint()
+        ..color = const Color(0xFFFFCA28)
+        ..strokeWidth = 2.2
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..style = PaintingStyle.stroke,
+    );
   }
 
   void _drawDashedLine(
@@ -348,6 +493,7 @@ class ParkingLotPainter extends CustomPainter {
     final dx = end.dx - start.dx;
     final dy = end.dy - start.dy;
     final distance = math.sqrt(dx * dx + dy * dy);
+    if (distance <= 0) return;
     final ux = dx / distance;
     final uy = dy / distance;
 

@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rush_out/core/services/audio_service.dart';
 import 'package:rush_out/domain/entities/level.dart';
+import 'package:rush_out/presentation/bloc/daily_cubit.dart';
 import 'package:rush_out/presentation/bloc/game_cubit.dart';
 
 void main() {
@@ -25,7 +26,7 @@ void main() {
     setUp(() {
       cubit = GameCubit(
         level: sampleLevel,
-        audioService: AudioService(),
+        audioService: AudioService(enablePlatformAudio: false),
       );
     });
 
@@ -33,14 +34,16 @@ void main() {
       await cubit.close();
     });
 
-    test('manages board state, hint, undo, reset, and win detection', () async {
+    test('manages board state, async Isolate hint, undo, reset, and win detection', () async {
       expect(cubit.state.boardState.moveCount, 0);
       expect(cubit.state.isWon, isFalse);
+      expect(cubit.state.remainingHints, 3);
 
-      // Request hint -> should suggest moving B out of row 2
-      cubit.requestHint();
+      // Request hint -> runs BfsSolver in background Isolate and decrements remainingHints
+      await cubit.requestHint();
       expect(cubit.state.activeHint, isNotNull);
       expect(cubit.state.activeHint!.vehicleId, 'B');
+      expect(cubit.state.remainingHints, 2);
 
       // Drag B down to row 3
       cubit.onVehicleDragStart('B');
@@ -61,12 +64,27 @@ void main() {
 
       expect(cubit.state.isWon, isTrue);
       expect(cubit.state.earnedStars, 3);
+      expect(cubit.state.level.bestMoves, 2);
+      expect(cubit.state.level.stars, 3);
+      // Earned 3 stars for the first time -> +1 bonus hint (2 + 1 = 3)
+      expect(cubit.state.remainingHints, 3);
 
       // Reset -> restores initial state
       cubit.reset();
       expect(cubit.state.isWon, isFalse);
       expect(cubit.state.boardState.moveCount, 0);
       expect(cubit.state.earnedStars, 0);
+    });
+
+    test('DailyCubit UTC date formatting and nickname profanity filter work accurately', () {
+      // 2026-11-15 02:30:00 in UTC+7 is 2026-11-14 19:30:00 UTC
+      final localEarlyMorning = DateTime.utc(2026, 11, 14, 19, 30);
+      expect(DailyCubit.formatTodayDateKey(localEarlyMorning), '2026-11-14');
+
+      expect(DailyCubit.validatePlayerName('SpeedRacer_VN'), isNull);
+      expect(DailyCubit.validatePlayerName('A'), isNotNull); // too short
+      expect(DailyCubit.validatePlayerName('bad link http://spam.com'), isNotNull);
+      expect(DailyCubit.validatePlayerName('player fuck 123'), isNotNull);
     });
   });
 }

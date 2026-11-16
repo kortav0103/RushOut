@@ -4,7 +4,7 @@ import '../../domain/entities/leaderboard_entry.dart';
 import '../../domain/repositories/daily_challenge_repository.dart';
 import '../datasources/local_database_datasource.dart';
 import '../datasources/supabase_remote_datasource.dart';
-import '../models/score_model.dart';
+import '../models/daily_challenge_model.dart';
 
 class DailyChallengeRepositoryImpl implements DailyChallengeRepository {
   final SupabaseRemoteDataSource remoteDataSource;
@@ -40,6 +40,7 @@ class DailyChallengeRepositoryImpl implements DailyChallengeRepository {
           optimalMoves: remoteChallenge.optimalMoves,
           isCompleted: existingCache?.isCompleted ?? false,
           userMoves: existingCache?.userMoves,
+          scoreSubmitted: existingCache?.scoreSubmitted ?? false,
         );
 
         await localDataSource.saveDailyChallengeCache(merged);
@@ -69,7 +70,7 @@ class DailyChallengeRepositoryImpl implements DailyChallengeRepository {
     }
 
     throw const ServerException(
-      'Unable to connect to Supabase. Please configure your .env file with valid SUPABASE_URL and SUPABASE_ANON_KEY and tap Retry.',
+      'Unable to connect to Supabase. Please check your build configuration and tap Retry.',
     );
   }
 
@@ -94,8 +95,25 @@ class DailyChallengeRepositoryImpl implements DailyChallengeRepository {
       optimalMoves: existing.optimalMoves,
       isCompleted: true,
       userMoves: bestMoves,
+      scoreSubmitted: existing.scoreSubmitted,
     );
 
+    await localDataSource.saveDailyChallengeCache(updated);
+    return updated;
+  }
+
+  @override
+  Future<DailyChallenge?> markScoreSubmitted(String dateKey) async {
+    final existing = await localDataSource.getCachedDailyChallenge(dateKey);
+    if (existing == null) return null;
+    final updated = DailyChallengeModel(
+      dateKey: existing.dateKey,
+      boardString: existing.boardString,
+      optimalMoves: existing.optimalMoves,
+      isCompleted: true,
+      userMoves: existing.userMoves,
+      scoreSubmitted: true,
+    );
     await localDataSource.saveDailyChallengeCache(updated);
     return updated;
   }

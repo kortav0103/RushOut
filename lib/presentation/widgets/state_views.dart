@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import '../theme/daylight_theme.dart';
+import 'tactile_widgets.dart';
 
 /// Animated Shimmer placeholder widget for Loading states (Board mode or List mode).
 class ShimmerLoadingView extends StatefulWidget {
@@ -46,9 +48,9 @@ class _ShimmerLoadingViewState extends State<ShimmerLoadingView>
           begin: Alignment(-1.0 + 2.0 * t, -0.3),
           end: Alignment(0.0 + 2.0 * t, 0.3),
           colors: const [
-            Color(0xFF1F2329),
-            Color(0xFF2E343D),
-            Color(0xFF1F2329),
+            DaylightColors.surfaceWhite,
+            DaylightColors.lockedSurface,
+            DaylightColors.surfaceWhite,
           ],
         );
 
@@ -117,7 +119,7 @@ class _ShimmerBox extends StatelessWidget {
       decoration: BoxDecoration(
         gradient: gradient,
         borderRadius: BorderRadius.circular(radius),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: DaylightColors.surfaceLip),
       ),
     );
   }
@@ -149,9 +151,16 @@ class EmptyStateView extends StatelessWidget {
           constraints: const BoxConstraints(maxWidth: 400),
           padding: const EdgeInsets.all(28),
           decoration: BoxDecoration(
-            color: const Color(0xFF1E2127),
+            color: DaylightColors.surfaceWhite,
             borderRadius: BorderRadius.circular(22),
-            border: Border.all(color: Colors.white12),
+            border: Border.all(color: DaylightColors.surfaceLip, width: 1.5),
+            boxShadow: [
+              BoxShadow(
+                color: DaylightColors.inkPrimary.withValues(alpha: 0.06),
+                blurRadius: 16,
+                offset: const Offset(0, 6),
+              ),
+            ],
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -159,44 +168,67 @@ class EmptyStateView extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: Colors.amberAccent.withValues(alpha: 0.12),
+                  color: DaylightColors.frontierFill,
                   shape: BoxShape.circle,
+                  border: Border.all(color: DaylightColors.frontierAmber),
                 ),
-                child: Icon(icon, size: 46, color: Colors.amberAccent),
+                child: Icon(
+                  icon,
+                  size: 44,
+                  color: DaylightColors.frontierAmberLip,
+                ),
               ),
               const SizedBox(height: 18),
               Text(
                 title,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
+                style: DaylightTypography.rounded(
+                  color: DaylightColors.inkPrimary,
                   fontSize: 19,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w900,
                 ),
               ),
               const SizedBox(height: 8),
               Text(
                 message,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white60,
+                style: DaylightTypography.rounded(
+                  color: DaylightColors.inkSecondary,
                   fontSize: 14,
-                  height: 1.4,
-                ),
+                  fontWeight: FontWeight.w600,
+                ).copyWith(height: 1.4),
               ),
               if (onAction != null && actionLabel != null) ...[
-                const SizedBox(height: 20),
-                OutlinedButton.icon(
-                  onPressed: onAction,
-                  icon: const Icon(Icons.refresh_rounded),
-                  label: Text(actionLabel!),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.amberAccent,
-                    side: const BorderSide(color: Colors.amberAccent),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 20,
-                      vertical: 12,
-                    ),
+                const SizedBox(height: 22),
+                TactileKeycap(
+                  onTap: onAction,
+                  surfaceColor: DaylightColors.frontierFill,
+                  lipColor: DaylightColors.frontierAmberLip,
+                  borderColor: DaylightColors.frontierAmber,
+                  borderRadius: 14,
+                  lipHeight: 3,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 22,
+                    vertical: 11,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.refresh_rounded,
+                        color: DaylightColors.frontierAmberLip,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        actionLabel!,
+                        style: DaylightTypography.rounded(
+                          color: DaylightColors.frontierAmberLip,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ],
@@ -232,12 +264,19 @@ class ErrorStateView extends StatelessWidget {
           constraints: const BoxConstraints(maxWidth: 420),
           padding: const EdgeInsets.all(26),
           decoration: BoxDecoration(
-            color: const Color(0xFF211C1E),
+            color: DaylightColors.surfaceWhite,
             borderRadius: BorderRadius.circular(22),
             border: Border.all(
-              color: Colors.redAccent.withValues(alpha: 0.4),
+              color: DaylightColors.brandRed.withValues(alpha: 0.45),
               width: 1.5,
             ),
+            boxShadow: [
+              BoxShadow(
+                color: DaylightColors.inkPrimary.withValues(alpha: 0.06),
+                blurRadius: 16,
+                offset: const Offset(0, 6),
+              ),
+            ],
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -245,56 +284,64 @@ class ErrorStateView extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: Colors.redAccent.withValues(alpha: 0.15),
+                  color: DaylightColors.brandRed.withValues(alpha: 0.12),
                   shape: BoxShape.circle,
                 ),
                 child: const Icon(
                   Icons.wifi_off_rounded,
                   size: 44,
-                  color: Colors.redAccent,
+                  color: DaylightColors.brandRed,
                 ),
               ),
               const SizedBox(height: 18),
               Text(
                 title,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
+                style: DaylightTypography.rounded(
+                  color: DaylightColors.inkPrimary,
                   fontSize: 19,
-                  fontWeight: FontWeight.w800,
+                  fontWeight: FontWeight.w900,
                 ),
               ),
               const SizedBox(height: 8),
               Text(
                 message,
                 textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white70,
+                style: DaylightTypography.rounded(
+                  color: DaylightColors.inkSecondary,
                   fontSize: 14,
-                  height: 1.4,
-                ),
+                  fontWeight: FontWeight.w600,
+                ).copyWith(height: 1.4),
               ),
               const SizedBox(height: 22),
-              FilledButton.icon(
-                style: FilledButton.styleFrom(
-                  backgroundColor: const Color(0xFFE53935),
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 26,
-                    vertical: 13,
-                  ),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(14),
-                  ),
+              TactileKeycap(
+                onTap: onRetry,
+                surfaceColor: DaylightColors.brandRed,
+                lipColor: DaylightColors.brandRedLip,
+                borderRadius: 14,
+                lipHeight: 3.5,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 26,
+                  vertical: 12,
                 ),
-                onPressed: onRetry,
-                icon: const Icon(Icons.refresh_rounded),
-                label: Text(
-                  retryLabel,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15,
-                  ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(
+                      Icons.refresh_rounded,
+                      color: Colors.white,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      retryLabel,
+                      style: DaylightTypography.rounded(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],

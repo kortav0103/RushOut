@@ -5,43 +5,50 @@ import '../../domain/usecases/get_levels.dart';
 
 class LevelSelectState extends Equatable {
   final bool isLoading;
-  final List<Level> allLevels;
-  final Difficulty selectedDifficulty;
+  final List<Level> levels;
   final String? errorMessage;
 
   const LevelSelectState({
     this.isLoading = false,
-    this.allLevels = const [],
-    this.selectedDifficulty = Difficulty.easy,
+    this.levels = const [],
     this.errorMessage,
   });
 
-  List<Level> get filteredLevels =>
-      allLevels.where((l) => l.difficulty == selectedDifficulty).toList();
-
   int get totalEarnedStars =>
-      allLevels.fold<int>(0, (sum, level) => sum + level.stars);
+      levels.fold<int>(0, (sum, level) => sum + level.stars);
 
-  int get maxPossibleStars => allLevels.length * 3;
+  int get maxPossibleStars => levels.length * 3;
 
-  Level? getNextLevel(int currentLevelId) {
-    for (final l in allLevels) {
-      if (l.id == currentLevelId + 1) return l;
+  /// Index of the player's current frontier level:
+  /// first unlocked unskipped level with 0 stars, or the highest unlocked level.
+  int get frontierIndex {
+    if (levels.isEmpty) return 0;
+    int lastUnlocked = 0;
+    for (int i = 0; i < levels.length; i++) {
+      final level = levels[i];
+      if (level.isUnlocked) {
+        lastUnlocked = i;
+        final nextUnlocked = i + 1 < levels.length && levels[i + 1].isUnlocked;
+        if (level.stars == 0 && !nextUnlocked) {
+          return i;
+        }
+      }
     }
-    return null;
+    return lastUnlocked;
   }
+
+  Level? get frontierLevel =>
+      levels.isEmpty ? null : levels[frontierIndex];
 
   LevelSelectState copyWith({
     bool? isLoading,
-    List<Level>? allLevels,
-    Difficulty? selectedDifficulty,
+    List<Level>? levels,
     String? errorMessage,
     bool clearError = false,
   }) {
     return LevelSelectState(
       isLoading: isLoading ?? this.isLoading,
-      allLevels: allLevels ?? this.allLevels,
-      selectedDifficulty: selectedDifficulty ?? this.selectedDifficulty,
+      levels: levels ?? this.levels,
       errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
     );
   }
@@ -49,8 +56,7 @@ class LevelSelectState extends Equatable {
   @override
   List<Object?> get props => [
         isLoading,
-        allLevels,
-        selectedDifficulty,
+        levels,
         errorMessage,
       ];
 }
@@ -61,23 +67,24 @@ class LevelSelectCubit extends Cubit<LevelSelectState> {
   LevelSelectCubit({required this.getLevelsUseCase})
       : super(const LevelSelectState(isLoading: true));
 
-  Future<void> loadLevels({Difficulty? selectDifficulty}) async {
+  Future<void> loadLevels() async {
     emit(
       state.copyWith(
-        isLoading: true,
-        selectedDifficulty: selectDifficulty ?? state.selectedDifficulty,
+        isLoading: state.levels.isEmpty,
         clearError: true,
       ),
     );
     try {
       final levels = await getLevelsUseCase();
+      if (isClosed) return;
       emit(
         state.copyWith(
           isLoading: false,
-          allLevels: levels,
+          levels: levels,
         ),
       );
     } catch (e) {
+      if (isClosed) return;
       emit(
         state.copyWith(
           isLoading: false,
@@ -85,9 +92,5 @@ class LevelSelectCubit extends Cubit<LevelSelectState> {
         ),
       );
     }
-  }
-
-  void selectDifficulty(Difficulty difficulty) {
-    emit(state.copyWith(selectedDifficulty: difficulty));
   }
 }

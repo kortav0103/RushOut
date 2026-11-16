@@ -1,3 +1,4 @@
+import '../../domain/engine/level_ordering_pipeline.dart';
 import '../../domain/entities/board_state.dart';
 import '../../domain/entities/level.dart';
 import '../../domain/entities/vehicle.dart';
@@ -241,7 +242,7 @@ class LevelParser {
           optimalMoves: e.optimalMoves,
           boardString: e.boardString,
           clusterSize: e.clusterSize,
-          isUnlocked: i == 0,
+          isUnlocked: nextId == 2,
         ),
       );
     }
@@ -255,7 +256,7 @@ class LevelParser {
           optimalMoves: e.optimalMoves,
           boardString: e.boardString,
           clusterSize: e.clusterSize,
-          isUnlocked: i == 0,
+          isUnlocked: false,
         ),
       );
     }
@@ -269,11 +270,11 @@ class LevelParser {
           optimalMoves: e.optimalMoves,
           boardString: e.boardString,
           clusterSize: e.clusterSize,
-          isUnlocked: i == 0,
+          isUnlocked: false,
         ),
       );
     }
 
-    return levels;
+    return LevelOrderingPipeline.orderLevels(levels);
   }
 }

@@ -1,91 +1,165 @@
 import 'package:flutter/material.dart';
+import '../theme/daylight_theme.dart';
+import 'tactile_widgets.dart';
 
 class HowToPlayDialog extends StatelessWidget {
-  const HowToPlayDialog({super.key});
+  final VoidCallback? onReplayTutorial;
 
-  static Future<void> show(BuildContext context) {
+  const HowToPlayDialog({
+    super.key,
+    this.onReplayTutorial,
+  });
+
+  static Future<void> show(
+    BuildContext context, {
+    VoidCallback? onReplayTutorial,
+  }) {
     return showDialog<void>(
       context: context,
-      builder: (_) => const HowToPlayDialog(),
+      builder: (_) => HowToPlayDialog(onReplayTutorial: onReplayTutorial),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      backgroundColor: const Color(0xFF1F2227),
+    return Dialog(
+      backgroundColor: DaylightColors.surfaceWhite,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(20),
-        side: const BorderSide(color: Colors.white12),
+        borderRadius: BorderRadius.circular(24),
+        side: const BorderSide(color: DaylightColors.surfaceLip, width: 2),
       ),
-      title: const Row(
-        children: [
-          Icon(Icons.help_outline_rounded, color: Colors.amberAccent, size: 28),
-          SizedBox(width: 10),
-          Text(
-            'How to Play RushOut',
-            style: TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 20,
-            ),
-          ),
-        ],
-      ),
-      content: const SingleChildScrollView(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(22),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _RuleItem(
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: DaylightColors.frontierFill,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: DaylightColors.frontierAmber),
+                  ),
+                  child: const Icon(
+                    Icons.help_outline_rounded,
+                    color: DaylightColors.frontierAmberLip,
+                    size: 24,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'How to Play RushOut',
+                    style: DaylightTypography.rounded(
+                      color: DaylightColors.inkPrimary,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 20,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            const _RuleItem(
               icon: Icons.directions_car_filled_rounded,
-              color: Colors.redAccent,
+              color: Color(0xFFE91E63),
               title: 'Escape the Parking Lot',
               description:
-                  'Slide obstructing cars and trucks so the red sports car (↔) can exit through the hazard gate on the right side of Row 3.',
+                  'Slide obstructing cars and trucks so the pink target car (↔) can exit through the yellow/black hazard gate on the right side of Row 3.',
             ),
-            SizedBox(height: 14),
-            _RuleItem(
+            const SizedBox(height: 14),
+            const _RuleItem(
               icon: Icons.open_with_rounded,
-              color: Colors.cyanAccent,
+              color: Color(0xFF1E88E5),
               title: 'Fixed Movement Axes',
               description:
                   'Vehicles marked with ↔ only slide horizontally (left/right). Vehicles marked with ↕ only slide vertically (up/down).',
             ),
-            SizedBox(height: 14),
-            _RuleItem(
+            const SizedBox(height: 14),
+            const _RuleItem(
               icon: Icons.star_rounded,
-              color: Colors.amberAccent,
+              color: DaylightColors.frontierAmberLip,
               title: 'Earn 3 Stars',
               description:
                   '• 3 Stars: Moves ≤ Optimal Moves\n'
                   '• 2 Stars: Moves ≤ Optimal + 3\n'
                   '• 1 Star: Moves > Optimal + 3',
             ),
-            SizedBox(height: 14),
-            _RuleItem(
+            const SizedBox(height: 14),
+            const _RuleItem(
               icon: Icons.lightbulb_outline_rounded,
-              color: Colors.greenAccent,
-              title: 'Smart BFS Hint & Undo',
+              color: DaylightColors.completedMintLip,
+              title: 'Smart Hint & Undo',
               description:
-                  'Stuck in traffic? Tap Hint to compute the shortest path from your current board state and highlight the exact next move!',
+                  'Stuck in traffic? Use Undo to step back, or tap Hint to highlight the shortest next move from your current board!',
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                if (onReplayTutorial != null) ...[
+                  Expanded(
+                    child: TactileKeycap(
+                      onTap: () {
+                        Navigator.of(context).pop();
+                        onReplayTutorial!();
+                      },
+                      surfaceColor: DaylightColors.canvasBg,
+                      lipColor: DaylightColors.surfaceLip,
+                      borderColor: DaylightColors.surfaceLip,
+                      borderRadius: 12,
+                      lipHeight: 3,
+                      padding: const EdgeInsets.symmetric(vertical: 11),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(
+                            Icons.school_rounded,
+                            color: DaylightColors.inkPrimary,
+                            size: 18,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Tutorial',
+                            style: DaylightTypography.rounded(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                              color: DaylightColors.inkPrimary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                ],
+                Expanded(
+                  child: TactileKeycap(
+                    onTap: () => Navigator.of(context).pop(),
+                    surfaceColor: DaylightColors.brandRed,
+                    lipColor: DaylightColors.brandRedLip,
+                    borderRadius: 12,
+                    lipHeight: 3,
+                    padding: const EdgeInsets.symmetric(vertical: 11),
+                    child: Center(
+                      child: Text(
+                        'Got It!',
+                        style: DaylightTypography.rounded(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w900,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ),
       ),
-      actions: [
-        FilledButton(
-          style: FilledButton.styleFrom(
-            backgroundColor: const Color(0xFFE53935),
-            foregroundColor: Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
-          ),
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Got It!'),
-        ),
-      ],
     );
   }
 }
@@ -111,7 +185,7 @@ class _RuleItem extends StatelessWidget {
         Container(
           padding: const EdgeInsets.all(8),
           decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.15),
+            color: color.withValues(alpha: 0.14),
             borderRadius: BorderRadius.circular(10),
           ),
           child: Icon(icon, color: color, size: 22),
@@ -123,20 +197,20 @@ class _RuleItem extends StatelessWidget {
             children: [
               Text(
                 title,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
+                style: DaylightTypography.rounded(
+                  color: DaylightColors.inkPrimary,
+                  fontWeight: FontWeight.w800,
                   fontSize: 15,
                 ),
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: 3),
               Text(
                 description,
-                style: const TextStyle(
-                  color: Colors.white70,
+                style: DaylightTypography.rounded(
+                  color: DaylightColors.inkSecondary,
                   fontSize: 13,
-                  height: 1.35,
-                ),
+                  fontWeight: FontWeight.w600,
+                ).copyWith(height: 1.35),
               ),
             ],
           ),

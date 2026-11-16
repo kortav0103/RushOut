@@ -12,7 +12,12 @@ class VehicleWidget extends StatefulWidget {
   final double cellSize;
   final bool isHinted;
   final bool isWon;
+  final bool isLocked;
+  final ({int minRow, int maxRow, int minCol, int maxCol})? Function(
+    Vehicle vehicle,
+  )? customDragBounds;
   final AudioService? audioService;
+  final VoidCallback? onLockedTap;
   final Future<void> Function(
     String vehicleId, {
     required double draggedRow,
@@ -26,7 +31,10 @@ class VehicleWidget extends StatefulWidget {
     required this.cellSize,
     this.isHinted = false,
     this.isWon = false,
+    this.isLocked = false,
+    this.customDragBounds,
     this.audioService,
+    this.onLockedTap,
     this.onMoveCommitted,
   });
 
@@ -44,7 +52,7 @@ class VehicleWidget extends StatefulWidget {
   }
 
   static Color getFallbackColor(Vehicle vehicle) {
-    if (vehicle.isTarget) return const Color(0xFFE53935);
+    if (vehicle.isTarget) return const Color(0xFFFF4DA6);
     const palette = [
       Color(0xFF1E88E5),
       Color(0xFFFDD835),
@@ -62,11 +70,13 @@ class VehicleWidget extends StatefulWidget {
 }
 
 class _VehicleWidgetState extends State<VehicleWidget>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
   final ValueNotifier<double> _dragOffsetPx = ValueNotifier<double>(0.0);
+  final ValueNotifier<double> _shakeOffsetPx = ValueNotifier<double>(0.0);
   final ValueNotifier<bool> _isDragging = ValueNotifier<bool>(false);
 
   late final AnimationController _snapController;
+  late final AnimationController _shakeController;
   Animation<double>? _snapAnimation;
 
   double _minOffsetPx = 0.0;
@@ -86,6 +96,16 @@ class _VehicleWidgetState extends State<VehicleWidget>
           _dragOffsetPx.value = anim.value;
         }
       });
+
+    _shakeController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 160),
+    )..addListener(() {
+        final t = _shakeController.value;
+        // Damped oscillation +/- 3.0px on collision
+        final wave = (1.0 - t) * 3.0 * (t < 0.25 ? 1 : (t < 0.5 ? -1 : (t < 0.75 ? 0.6 : -0.4)));
+        _shakeOffsetPx.value = _shakeController.isAnimating ? wave : 0.0;
+      });
   }
 
   @override
@@ -98,6 +118,7 @@ class _VehicleWidgetState extends State<VehicleWidget>
       _snapController.stop();
       _snapAnimation = null;
       _dragOffsetPx.value = 0.0;
+      _shakeOffsetPx.value = 0.0;
       _isDragging.value = false;
     }
   }
@@ -105,7 +126,9 @@ class _VehicleWidgetState extends State<VehicleWidget>
   @override
   void dispose() {
     _snapController.dispose();
+    _shakeController.dispose();
     _dragOffsetPx.dispose();
+    _shakeOffsetPx.dispose();
     _isDragging.dispose();
     super.dispose();
   }
@@ -115,24 +138,50 @@ class _VehicleWidgetState extends State<VehicleWidget>
       HapticFeedback.lightImpact();
     } catch (_) {}
     widget.audioService?.playSfx(AppConstants.sfxHornCollide);
+    _shakeController.forward(from: 0.0);
+  }
+
+  void _triggerLockedFeedback() {
+    try {
+      HapticFeedback.selectionClick();
+    } catch (_) {}
+    _shakeController.forward(from: 0.0);
+    widget.onLockedTap?.call();
   }
 
   void _onPanStart(DragStartDetails details) {
     if (widget.isWon) return;
+    if (widget.isLocked) {
+      _triggerLockedFeedback();
+      return;
+    }
     _snapController.stop();
     _snapAnimation = null;
 
-    final bounds = BoardEngine.getMovementBounds(
+    final boardBounds = BoardEngine.getMovementBounds(
       widget.boardState,
       widget.vehicle.id,
     );
+    final custom = widget.customDragBounds?.call(widget.vehicle);
+    final minCol = custom != null
+        ? custom.minCol.clamp(boardBounds.minCol, boardBounds.maxCol)
+        : boardBounds.minCol;
+    final maxCol = custom != null
+        ? custom.maxCol.clamp(boardBounds.minCol, boardBounds.maxCol)
+        : boardBounds.maxCol;
+    final minRow = custom != null
+        ? custom.minRow.clamp(boardBounds.minRow, boardBounds.maxRow)
+        : boardBounds.minRow;
+    final maxRow = custom != null
+        ? custom.maxRow.clamp(boardBounds.minRow, boardBounds.maxRow)
+        : boardBounds.maxRow;
 
     if (widget.vehicle.isHorizontal) {
-      _minOffsetPx = (bounds.minCol - widget.vehicle.col) * widget.cellSize;
-      _maxOffsetPx = (bounds.maxCol - widget.vehicle.col) * widget.cellSize;
+      _minOffsetPx = (minCol - widget.vehicle.col) * widget.cellSize;
+      _maxOffsetPx = (maxCol - widget.vehicle.col) * widget.cellSize;
     } else {
-      _minOffsetPx = (bounds.minRow - widget.vehicle.row) * widget.cellSize;
-      _maxOffsetPx = (bounds.maxRow - widget.vehicle.row) * widget.cellSize;
+      _minOffsetPx = (minRow - widget.vehicle.row) * widget.cellSize;
+      _maxOffsetPx = (maxRow - widget.vehicle.row) * widget.cellSize;
     }
 
     _hitMinBoundary = false;
@@ -216,6 +265,8 @@ class _VehicleWidgetState extends State<VehicleWidget>
 
     // Only call BLoC after the 100ms snap animation completes and the grid cell changed
     if (finalCell != startCell) {
+      final startRow = vehicle.row;
+      final startCol = vehicle.col;
       final targetRow =
           vehicle.isHorizontal ? vehicle.row.toDouble() : finalCell.toDouble();
       final targetCol =
@@ -226,6 +277,15 @@ class _VehicleWidgetState extends State<VehicleWidget>
         draggedRow: targetRow,
         draggedCol: targetCol,
       );
+
+      // If parent rejected the move (e.g. incomplete tutorial drag), reset pixel offset
+      if (mounted &&
+          widget.vehicle.row == startRow &&
+          widget.vehicle.col == startCol &&
+          _dragOffsetPx.value != 0.0) {
+        _dragOffsetPx.value = 0.0;
+        _shakeController.forward(from: 0.0);
+      }
     } else {
       _dragOffsetPx.value = 0.0;
     }
@@ -254,6 +314,19 @@ class _VehicleWidgetState extends State<VehicleWidget>
       },
     );
 
+    // Shift target car from red to vibrant pink without tinting transparent PNG pixels
+    if (vehicle.isTarget) {
+      spriteImage = ColorFiltered(
+        colorFilter: const ColorFilter.matrix(<double>[
+          1.0, 0.0, 0.0, 0.0, 0.0,
+          0.15, 0.85, 0.0, 0.0, 0.0,
+          0.55, 0.0, 0.95, 0.0, 0.0,
+          0.0, 0.0, 0.0, 1.0, 0.0,
+        ]),
+        child: spriteImage,
+      );
+    }
+
     if (vehicle.isHorizontal) {
       spriteImage = RotatedBox(
         quarterTurns: 1,
@@ -268,32 +341,42 @@ class _VehicleWidgetState extends State<VehicleWidget>
           borderRadius: BorderRadius.circular(8),
           child: spriteImage,
         ),
-        // Accessibility directional overlay ('↔' or '↕')
+        // Subtle accessibility directional overlay ('↔' or '↕')
         Center(
-          child: Container(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 6,
-              vertical: 2,
-            ),
-            decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.58),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: vehicle.isTarget
-                    ? Colors.redAccent.withValues(alpha: 0.8)
-                    : Colors.white38,
-                width: 1,
-              ),
-            ),
-            child: Text(
-              vehicle.isHorizontal ? '↔' : '↕',
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 13,
-                fontWeight: FontWeight.bold,
-                height: 1.0,
-              ),
-            ),
+          child: ValueListenableBuilder<bool>(
+            valueListenable: _isDragging,
+            builder: (context, isSelected, _) {
+              final active = isSelected || widget.isHinted;
+              return AnimatedOpacity(
+                duration: const Duration(milliseconds: 120),
+                opacity: active ? 0.9 : 0.42,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 1.5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: vehicle.isTarget
+                          ? Colors.pinkAccent.withValues(alpha: 0.85)
+                          : Colors.white30,
+                      width: 0.8,
+                    ),
+                  ),
+                  child: Text(
+                    vehicle.isHorizontal ? '↔' : '↕',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      height: 1.0,
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ],
@@ -301,6 +384,7 @@ class _VehicleWidgetState extends State<VehicleWidget>
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
+      onTap: widget.isLocked && !widget.isWon ? _triggerLockedFeedback : null,
       onPanStart: _onPanStart,
       onPanUpdate: _onPanUpdate,
       onPanEnd: _onPanEnd,
@@ -308,10 +392,17 @@ class _VehicleWidgetState extends State<VehicleWidget>
       child: ValueListenableBuilder<double>(
         valueListenable: _dragOffsetPx,
         builder: (context, offsetPx, child) {
-          return Transform.translate(
-            offset: vehicle.isHorizontal
-                ? Offset(offsetPx, 0.0)
-                : Offset(0.0, offsetPx),
+          return ValueListenableBuilder<double>(
+            valueListenable: _shakeOffsetPx,
+            builder: (context, shakePx, innerChild) {
+              final totalPx = offsetPx + shakePx;
+              return Transform.translate(
+                offset: vehicle.isHorizontal
+                    ? Offset(totalPx, 0.0)
+                    : Offset(0.0, totalPx),
+                child: innerChild,
+              );
+            },
             child: child,
           );
         },
@@ -355,7 +446,11 @@ class _VehicleWidgetState extends State<VehicleWidget>
                   child: child,
                 );
               },
-              child: staticCarContent,
+              child: AnimatedOpacity(
+                duration: const Duration(milliseconds: 180),
+                opacity: widget.isLocked ? 0.42 : 1.0,
+                child: staticCarContent,
+              ),
             ),
           ),
         ),

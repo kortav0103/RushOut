@@ -25,4 +25,14 @@ class SaveProgress {
     );
     return stars;
   }
+
+  Future<void> skipLevel({
+    required int levelId,
+    required Difficulty difficulty,
+  }) {
+    return repository.skipLevel(
+      levelId: levelId,
+      difficulty: difficulty,
+    );
+  }
 }

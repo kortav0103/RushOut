@@ -1,7 +1,7 @@
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../domain/entities/leaderboard_entry.dart';
-import '../../domain/usecases/submit_score.dart';
+import '../../domain/usecases/get_leaderboard.dart';
 import 'daily_cubit.dart';
 
 enum LeaderboardViewStatus { loading, content, empty, error }
@@ -68,6 +68,7 @@ class LeaderboardCubit extends Cubit<LeaderboardState> {
 
     try {
       final scores = await getLeaderboardUseCase(targetDate);
+      if (isClosed) return;
       if (scores.isEmpty) {
         emit(
           state.copyWith(
@@ -84,6 +85,7 @@ class LeaderboardCubit extends Cubit<LeaderboardState> {
         );
       }
     } catch (e) {
+      if (isClosed) return;
       emit(
         state.copyWith(
           status: LeaderboardViewStatus.error,
