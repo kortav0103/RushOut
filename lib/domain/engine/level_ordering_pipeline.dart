@@ -477,17 +477,30 @@ class LevelOrderingPipeline {
     }
 
     // 2. Remaining levels continue in 10-level Micro-Waves ([L0, L1, L3..L9, L2])
-    final List<_IndexedLevel> tail = [
+    //    while preserving layout-diversity spacing across the 55-level window.
+    final List<_IndexedLevel> tailItems = [
       for (int i = mainPool.head; i < mainPool.items.length; i++)
         if (!mainPool.used[i]) mainPool.items[i],
       for (int i = hardPool.head; i < hardPool.items.length; i++)
         if (!hardPool.used[i]) hardPool.items[i],
     ]..sort(_compareDifficultyScore);
+    final tailPool = _IndexedPool(tailItems);
 
-    int tailCursor = 0;
-    while (tailCursor + microWaveSize <= tail.length) {
-      final chunk = tail.sublist(tailCursor, tailCursor + microWaveSize);
-      zone3.addAll([
+    while (tailPool.remainingCount >= microWaveSize) {
+      final Queue<_BoardMask> localWindow = Queue<_BoardMask>.from(recentWindow);
+      final List<_IndexedLevel> chunk = [];
+      for (int i = 0; i < microWaveSize; i++) {
+        final chosen = _pickDiverse(
+          tailPool,
+          localWindow,
+          lookahead: _zone3Lookahead,
+        );
+        chunk.add(chosen);
+        _pushWindow(localWindow, chosen.mask);
+      }
+      chunk.sort(_compareDifficultyScore);
+
+      final wave = [
         chunk[0],
         chunk[1],
         chunk[3],
@@ -498,14 +511,27 @@ class LevelOrderingPipeline {
         chunk[8],
         chunk[9],
         chunk[2],
-      ]);
-      tailCursor += microWaveSize;
+      ];
+      zone3.addAll(wave);
+      for (final w in wave) {
+        _pushWindow(recentWindow, w.mask);
+      }
     }
 
-    // Trailing remainder (< 10 levels) stays in ascending difficultyScore order
-    if (tailCursor < tail.length) {
-      zone3.addAll(tail.sublist(tailCursor));
+    // Trailing remainder (< 10 levels) still goes through diversity selection
+    // and stays ordered by ascending difficultyScore.
+    final List<_IndexedLevel> remainder = [];
+    while (tailPool.remainingCount > 0) {
+      final chosen = _pickDiverse(
+        tailPool,
+        recentWindow,
+        lookahead: _zone3Lookahead,
+      );
+      remainder.add(chosen);
+      _pushWindow(recentWindow, chosen.mask);
     }
+    remainder.sort(_compareDifficultyScore);
+    zone3.addAll(remainder);
 
     final combined = [...zone1, ...zone2, ...zone3];
 

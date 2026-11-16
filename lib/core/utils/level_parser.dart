@@ -41,9 +41,17 @@ class LevelParser {
 
     final optimalMoves = int.tryParse(parts[0]);
     final boardString = parts[1];
-    final clusterSize = parts.length >= 3 ? (int.tryParse(parts[2]) ?? 0) : 0;
+    int clusterSize = 0;
+    if (parts.length >= 3) {
+      final parsedCluster = int.tryParse(parts[2]);
+      if (parsedCluster == null || parsedCluster < 0) {
+        return null;
+      }
+      clusterSize = parsedCluster;
+    }
 
     if (optimalMoves == null ||
+        optimalMoves <= 0 ||
         boardString.length != AppConstants.boardStringLength) {
       return null;
     }
@@ -159,6 +167,21 @@ class LevelParser {
       }
     }
 
+    final targetVehicles = vehicles.where((v) => v.isTarget).toList();
+    if (targetVehicles.length != 1) {
+      throw const LevelParseException(
+        'Board string must contain target vehicle "${AppConstants.targetVehicleId}".',
+      );
+    }
+    final target = targetVehicles.first;
+    if (!target.isHorizontal ||
+        target.row != AppConstants.exitRow ||
+        target.length != 2) {
+      throw const LevelParseException(
+        'Target vehicle "${AppConstants.targetVehicleId}" must be horizontal, length 2, on row ${AppConstants.exitRow}.',
+      );
+    }
+
     return vehicles;
   }
 
@@ -175,10 +198,10 @@ class LevelParser {
   }
 
   /// Parses the entire content of `rush1000.txt`, filters out lines with `'x'`,
-  /// and extracts 30 campaign levels divided equally into:
-  /// - Easy: optimalMoves 5..10 (10 levels, IDs 1..10)
-  /// - Medium: optimalMoves 11..18 (10 levels, IDs 11..20)
-  /// - Hard: optimalMoves 19..25 (10 levels, IDs 21..30)
+  /// and extracts up to `3 * perDifficulty` campaign levels (default 4,050):
+  /// - Easy: optimalMoves 5..10 (1,350 levels by default)
+  /// - Medium: optimalMoves 11..18 (1,350 levels by default)
+  /// - Hard: optimalMoves 19..25 (1,350 levels by default)
   static List<Level> parseCampaignLevels(
     String fileContent, {
     int perDifficulty = AppConstants.levelsPerDifficulty,
@@ -193,16 +216,9 @@ class LevelParser {
       final entry = parseLine(line);
       if (entry == null) continue;
 
-      // Ensure the board string itself is valid and has target vehicle 'A'
+      // Ensure the board string itself is valid and has a valid target vehicle 'A'
       try {
-        final vehicles = parseBoardString(entry.boardString);
-        final hasValidTarget = vehicles.any(
-          (v) =>
-              v.id == AppConstants.targetVehicleId &&
-              v.isHorizontal &&
-              v.row == AppConstants.exitRow,
-        );
-        if (!hasValidTarget) continue;
+        parseBoardString(entry.boardString);
       } catch (_) {
         continue;
       }

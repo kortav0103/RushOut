@@ -235,5 +235,76 @@ void main() {
         prevRamp = m.difficultyScore;
       }
     });
+
+    test('Zone 3 tail applies layout diversity so identical Hard families do not clump consecutively', () {
+      // 10 identical copies of hardLayoutA (optimalMoves=19) plus 10 distinct
+      // Hard board layouts (optimalMoves=20) so a 10-level wave has enough distinct layouts.
+      const hardLayoutA = 'BBCCoo'
+          'oooDoo'
+          'AAoDoo'
+          'oooooo'
+          'oooooo'
+          'oooooo';
+      const distinctLayouts = <String>[
+        'oooooo' 'oooooo' 'oAAoBo' 'ooooBo' 'CCDDDo' 'oooooo',
+        'BBBooo' 'oooooo' 'AAoooo' 'oooCoo' 'oooCoo' 'DDoooo',
+        'oooooo' 'CCoooo' 'AAoDoo' 'oooDoo' 'oooooo' 'EEEooo',
+        'oooBBB' 'oooooo' 'AAoooo' 'oooooo' 'CCoooo' 'DDDooo',
+        'oooooo' 'oooooo' 'AAoooo' 'Booooo' 'Booooo' 'CCCDDD',
+        'oooooo' 'ooBBoo' 'AAoooo' 'oooooo' 'ooCCoo' 'ooDDDo',
+        'CCoooo' 'oooooo' 'AAoooo' 'ooBooo' 'ooBooo' 'ooBDDD',
+        'oooooo' 'oooCCC' 'AAoooo' 'oooooo' 'Booooo' 'BDDDoo',
+        'BBoooo' 'CCoooo' 'AAoooo' 'oooooo' 'oooooo' 'oDDDoo',
+        'oooooo' 'oooooo' 'AAoBBo' 'oooooo' 'CCCooo' 'oooDDD',
+      ];
+
+      const simpleEasyBoard = 'oooooo'
+          'oooooo'
+          'AAoooo'
+          'oooooo'
+          'oooooo'
+          'oooooo';
+
+      // 19 onboarding Easy levels + 20 Hard levels going straight into Zone 3 tail
+      final levels = <Level>[
+        for (int i = 0; i < 19; i++)
+          Level(
+            id: i + 1,
+            difficulty: Difficulty.easy,
+            optimalMoves: 5 + (i % 5),
+            boardString: simpleEasyBoard,
+          ),
+        for (int i = 0; i < 10; i++)
+          Level(
+            id: 20 + i,
+            difficulty: Difficulty.hard,
+            optimalMoves: 19,
+            boardString: hardLayoutA,
+          ),
+        for (int i = 0; i < 10; i++)
+          Level(
+            id: 30 + i,
+            difficulty: Difficulty.hard,
+            optimalMoves: 20,
+            boardString: distinctLayouts[i],
+          ),
+      ];
+
+      final ordered = LevelOrderingPipeline.orderLevels(levels);
+      expect(ordered.length, 39);
+
+      // Without tail diversity, all 10 hardLayoutA levels clump at indices 19..28.
+      // With _pickDiverse in tail, the first 10-level tail wave (indices 19..28)
+      // contains at most 1 copy of hardLayoutA.
+      final firstTailWaveBoards =
+          ordered.sublist(19, 29).map((l) => l.boardString).toList();
+      final hardACountInFirstWave =
+          firstTailWaveBoards.where((b) => b == hardLayoutA).length;
+      expect(
+        hardACountInFirstWave,
+        1,
+        reason: 'Tail wave must diversify across distinct layouts instead of clumping identical Hard levels.',
+      );
+    });
   });
 }

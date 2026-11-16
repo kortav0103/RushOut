@@ -1,11 +1,11 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rush_out/data/datasources/level_asset_datasource.dart';
-import 'package:rush_out/data/datasources/local_database_datasource.dart';
 import 'package:rush_out/data/repositories/level_repository_impl.dart';
 import 'package:rush_out/domain/entities/level.dart';
 import 'package:rush_out/domain/repositories/level_repository.dart';
 import 'package:rush_out/domain/usecases/get_levels.dart';
 import 'package:rush_out/presentation/bloc/level_select_cubit.dart';
+import '../helpers/in_memory_local_database_datasource.dart';
 
 class _FakeLevelRepository implements LevelRepository {
   final List<Level> _levels;
@@ -89,7 +89,7 @@ void main() {
 
       final repo = LevelRepositoryImpl(
         assetDataSource: _FakeAssetDataSource(base),
-        localDataSource: LocalDatabaseDataSource(),
+        localDataSource: InMemoryLocalDatabaseDataSource(),
       );
 
       // Initially only Level #1 is unlocked

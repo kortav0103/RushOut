@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rush_out/core/services/audio_service.dart';
 import 'package:rush_out/data/datasources/level_asset_datasource.dart';
-import 'package:rush_out/data/datasources/local_database_datasource.dart';
 import 'package:rush_out/data/datasources/supabase_remote_datasource.dart';
 import 'package:rush_out/data/repositories/daily_challenge_repository_impl.dart';
 import 'package:rush_out/data/repositories/leaderboard_repository_impl.dart';
@@ -13,6 +12,7 @@ import 'package:rush_out/domain/usecases/get_leaderboard.dart';
 import 'package:rush_out/domain/usecases/submit_score.dart';
 import 'package:rush_out/core/network/network_info.dart';
 import 'package:rush_out/app/rush_out_app.dart';
+import 'helpers/in_memory_local_database_datasource.dart';
 
 class _FakeNetworkInfo implements NetworkInfo {
   @override
@@ -23,7 +23,7 @@ void main() {
   testWidgets('RushOut HomeScreen renders title and navigation buttons',
       (WidgetTester tester) async {
     final audioService = AudioService(enablePlatformAudio: false);
-    final localDataSource = LocalDatabaseDataSource();
+    final localDataSource = InMemoryLocalDatabaseDataSource();
     final assetDataSource = LevelAssetDataSource();
     final remoteDataSource = SupabaseRemoteDataSource();
     final networkInfo = _FakeNetworkInfo();

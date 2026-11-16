@@ -1,8 +1,15 @@
-import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 import '../../core/error/exceptions.dart';
 import '../models/daily_challenge_model.dart';
+
+typedef DatabasesPathProvider = Future<String> Function();
+typedef DatabaseOpener = Future<Database> Function(
+  String path, {
+  int? version,
+  OnDatabaseCreateFn? onCreate,
+  OnDatabaseVersionChangeFn? onUpgrade,
+});
 
 class LocalDatabaseDataSource {
   static const String _dbName = 'rush_out.db';
@@ -11,18 +18,48 @@ class LocalDatabaseDataSource {
   static const String tableLevelProgress = 'level_progress';
   static const String tableDailyCache = 'daily_cache';
 
+  final DatabasesPathProvider _getDatabasesPath;
+  final DatabaseOpener _openDatabase;
+  final String _dbFileName;
+
   Database? _database;
+  Future<Database>? _openingDatabase;
 
-  // Fallback in-memory storage only when SQLite plugin is unavailable (e.g. unit tests)
-  final Map<int, Map<String, dynamic>> _memoryLevelProgress = {};
-  final Map<String, Map<String, dynamic>> _memoryDailyCache = {};
+  LocalDatabaseDataSource({
+    DatabasesPathProvider? getDatabasesPathFn,
+    DatabaseOpener? openDatabaseFn,
+    String dbFileName = _dbName,
+  })  : _getDatabasesPath = getDatabasesPathFn ?? getDatabasesPath,
+        _openDatabase = openDatabaseFn ?? openDatabase,
+        _dbFileName = dbFileName;
 
-  Future<Database?> get database async {
-    if (_database != null) return _database;
+  /// Returns the singleton SQLite [Database], memoizing concurrent open calls.
+  Future<Database> get database {
+    final existing = _database;
+    if (existing != null && existing.isOpen) {
+      return Future.value(existing);
+    }
+
+    final inFlight = _openingDatabase;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final future = _openAndInitializeDatabase();
+    _openingDatabase = future;
+    return future.whenComplete(() {
+      if (identical(_openingDatabase, future)) {
+        _openingDatabase = null;
+      }
+    });
+  }
+
+  Future<Database> _openAndInitializeDatabase() async {
     try {
-      final dbPath = await getDatabasesPath();
-      final fullPath = p.join(dbPath, _dbName);
-      _database = await openDatabase(
+      final dbPath = await _getDatabasesPath();
+      final fullPath =
+          dbPath == inMemoryDatabasePath ? dbPath : p.join(dbPath, _dbFileName);
+      final db = await _openDatabase(
         fullPath,
         version: _dbVersion,
         onCreate: (db, version) async {
@@ -64,16 +101,8 @@ class LocalDatabaseDataSource {
           }
         },
       );
-      return _database;
-    } on MissingPluginException {
-      return null;
-    } on UnimplementedError {
-      return null;
-    } on StateError catch (e) {
-      if (e.message.contains('databaseFactory')) {
-        return null;
-      }
-      throw CacheException('Failed to open local database: $e');
+      _database = db;
+      return db;
     } catch (e) {
       throw CacheException('Failed to open local database: $e');
     }
@@ -94,9 +123,6 @@ class LocalDatabaseDataSource {
 
   Future<Map<int, Map<String, dynamic>>> getAllLevelProgress() async {
     final db = await database;
-    if (db == null) {
-      return Map<int, Map<String, dynamic>>.from(_memoryLevelProgress);
-    }
     try {
       final rows = await db.query(tableLevelProgress);
       final Map<int, Map<String, dynamic>> result = {};
@@ -114,9 +140,6 @@ class LocalDatabaseDataSource {
 
   Future<Map<String, dynamic>?> getLevelProgress(int levelId) async {
     final db = await database;
-    if (db == null) {
-      return _memoryLevelProgress[levelId];
-    }
     try {
       final rows = await db.query(
         tableLevelProgress,
@@ -148,17 +171,12 @@ class LocalDatabaseDataSource {
     };
 
     final db = await database;
-    if (db == null) {
-      _memoryLevelProgress[levelId] = data;
-      return;
-    }
     try {
       await db.insert(
         tableLevelProgress,
         data,
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
-      _memoryLevelProgress[levelId] = data;
     } catch (e) {
       throw CacheException('Failed to save progress for level $levelId: $e');
     }
@@ -166,10 +184,6 @@ class LocalDatabaseDataSource {
 
   Future<DailyChallengeModel?> getCachedDailyChallenge(String dateKey) async {
     final db = await database;
-    if (db == null) {
-      final mem = _memoryDailyCache[dateKey];
-      return mem != null ? DailyChallengeModel.fromCacheMap(mem) : null;
-    }
     try {
       final rows = await db.query(
         tableDailyCache,
@@ -186,21 +200,23 @@ class LocalDatabaseDataSource {
 
   Future<void> saveDailyChallengeCache(DailyChallengeModel challenge) async {
     final map = challenge.toCacheMap();
-
     final db = await database;
-    if (db == null) {
-      _memoryDailyCache[challenge.dateKey] = map;
-      return;
-    }
     try {
       await db.insert(
         tableDailyCache,
         map,
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
-      _memoryDailyCache[challenge.dateKey] = map;
     } catch (e) {
       throw CacheException('Failed to cache daily challenge: $e');
+    }
+  }
+
+  Future<void> close() async {
+    final db = _database;
+    _database = null;
+    if (db != null && db.isOpen) {
+      await db.close();
     }
   }
 }

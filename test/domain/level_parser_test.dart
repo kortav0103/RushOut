@@ -100,6 +100,57 @@ void main() {
         ),
         throwsA(isA<LevelParseException>()),
       );
+
+      // Missing target vehicle 'A'
+      expect(
+        () => LevelParser.parseBoardString(
+          'BBoKooIooKooIooKooIooLCCJDDLFFJGGooo',
+        ),
+        throwsA(isA<LevelParseException>()),
+      );
+
+      // Target vehicle 'A' length != 2 (length 3)
+      expect(
+        () => LevelParser.parseBoardString(
+          'ooooooooooooAAAooooooooooooooooooooo',
+        ),
+        throwsA(isA<LevelParseException>()),
+      );
+
+      // Target vehicle 'A' is vertical
+      expect(
+        () => LevelParser.parseBoardString(
+          'ooAoooooAooooooooooooooooooooooooooo',
+        ),
+        throwsA(isA<LevelParseException>()),
+      );
+
+      // Target vehicle 'A' is on wrong row (row 0 instead of exitRow 2)
+      expect(
+        () => LevelParser.parseBoardString(
+          'AAoooooooooooooooooooooooooooooooooo',
+        ),
+        throwsA(isA<LevelParseException>()),
+      );
+    });
+
+    test('parseLine rejects non-positive optimalMoves and negative clusterSize', () {
+      expect(
+        LevelParser.parseLine('0 $validBoardString 10'),
+        isNull,
+      );
+      expect(
+        LevelParser.parseLine('-3 $validBoardString 10'),
+        isNull,
+      );
+      expect(
+        LevelParser.parseLine('8 $validBoardString -1'),
+        isNull,
+      );
+      expect(
+        LevelParser.parseLine('8 $validBoardString invalid_cluster'),
+        isNull,
+      );
     });
 
     test(

@@ -2,9 +2,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:rush_out/core/network/network_info.dart';
 import 'package:rush_out/core/services/player_identity_service.dart';
 import 'package:rush_out/core/services/tutorial_service.dart';
-import 'package:rush_out/data/datasources/local_database_datasource.dart';
 import 'package:rush_out/data/datasources/supabase_remote_datasource.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../helpers/in_memory_local_database_datasource.dart';
 
 class _FakeNetworkInfo implements NetworkInfo {
   bool connected;
@@ -73,7 +73,7 @@ void main() {
 
     test('Case 1 & 2: Offline first launch resolves persistent deviceId and saves username locally', () async {
       final remote = _FakeSupabaseRemoteDataSource(configured: true);
-      final localDb = LocalDatabaseDataSource();
+      final localDb = InMemoryLocalDatabaseDataSource();
       final tutorial = TutorialService();
       final net = _FakeNetworkInfo(connected: false);
 
@@ -150,7 +150,7 @@ void main() {
         ];
 
       // Fresh wiped local DB & SharedPreferences (simulating app uninstall + reinstall)
-      final freshDb = LocalDatabaseDataSource();
+      final freshDb = InMemoryLocalDatabaseDataSource();
       final freshTutorial = TutorialService();
       expect(await freshTutorial.hasCompletedTutorial(), isFalse);
 
@@ -199,7 +199,7 @@ void main() {
           },
         ];
 
-      final localDb = LocalDatabaseDataSource();
+      final localDb = InMemoryLocalDatabaseDataSource();
       await localDb.upsertLevelProgress(
         levelId: 1,
         difficulty: 'easy',
@@ -250,7 +250,7 @@ void main() {
 
       final service = PlayerIdentityService(
         remoteDataSource: remote,
-        localDataSource: LocalDatabaseDataSource(),
+        localDataSource: InMemoryLocalDatabaseDataSource(),
         tutorialService: TutorialService(),
         networkInfo: _FakeNetworkInfo(connected: true),
         deviceIdProvider: () async => 'win_TEST_DEVICE_001',

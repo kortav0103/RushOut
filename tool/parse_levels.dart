@@ -4,8 +4,8 @@ import 'package:rush_out/core/utils/level_parser.dart';
 import 'package:rush_out/domain/entities/level.dart';
 
 /// Standalone CLI script to parse `assets/levels/rush1000.txt`,
-/// filter out lines containing `'x'` (fixed walls), and output 30 standard
-/// campaign levels (10 Easy [5-10], 10 Medium [11-18], 10 Hard [19-25]).
+/// filter out lines containing `'x'` (fixed walls), and output 4,050 standard
+/// campaign levels (1,350 Easy [5-10], 1,350 Medium [11-18], 1,350 Hard [19-25]).
 void main(List<String> args) {
   final inputPath = args.isNotEmpty ? args[0] : 'assets/levels/rush1000.txt';
   final file = File(inputPath);
@@ -58,6 +58,6 @@ void main(List<String> args) {
     outputJsonFile.writeAsStringSync(
       const JsonEncoder.withIndent('  ').convert(jsonList),
     );
-    stdout.writeln('Exported 30 parsed levels to ${outputJsonFile.path}');
+    stdout.writeln('Exported ${levels.length} parsed levels to ${outputJsonFile.path}');
   }
 }

@@ -53,16 +53,58 @@ Future<void> main() async {
 
 Future<void> _loadEnv() async {
   // Compile-time --dart-define / --dart-define-from-file=.env takes precedence in
-  // SupabaseRemoteDataSource. Only fall back to .env.example if available.
+  // SupabaseRemoteDataSource. Only attempt dotenv fallback if not defined at compile time.
+  if (const String.fromEnvironment('SUPABASE_URL').trim().isNotEmpty) {
+    return;
+  }
   try {
-    await dotenv.load(fileName: '.env.example');
+    await dotenv.load(fileName: '.env');
   } catch (_) {
-    // Graceful fallback when no dotenv asset is used.
+    try {
+      await dotenv.load(fileName: '.env.example');
+    } catch (_) {
+      // Graceful fallback when no dotenv asset is used.
+    }
   }
 }
 
-class _BootstrapErrorApp extends StatelessWidget {
+class _BootstrapErrorApp extends StatefulWidget {
   const _BootstrapErrorApp();
+
+  @override
+  State<_BootstrapErrorApp> createState() => _BootstrapErrorAppState();
+}
+
+class _BootstrapErrorAppState extends State<_BootstrapErrorApp> {
+  bool _isRetrying = false;
+  String? _retryError;
+
+  Future<void> _retryBootstrap() async {
+    if (_isRetrying) return;
+    setState(() {
+      _isRetrying = true;
+      _retryError = null;
+    });
+
+    try {
+      final deps = await AppDependencies.init();
+      runApp(RushOutApp.fromDependencies(deps));
+    } catch (e, stack) {
+      ErrorReportingService.instance.recordError(
+        e,
+        stack,
+        fatal: false,
+        context: 'BootstrapRetry',
+      );
+      if (mounted) {
+        setState(() {
+          _isRetrying = false;
+          _retryError =
+              'Initialization failed again. Please verify storage permissions and try again.';
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -86,22 +128,18 @@ class _BootstrapErrorApp extends StatelessWidget {
                   'Please restart the app. If the problem persists, try reinstalling.',
                   textAlign: TextAlign.center,
                 ),
+                if (_retryError != null) ...[
+                  const SizedBox(height: 12),
+                  Text(
+                    _retryError!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.red, fontSize: 13),
+                  ),
+                ],
                 const SizedBox(height: 20),
                 ElevatedButton(
-                  onPressed: () async {
-                    try {
-                      final deps = await AppDependencies.init();
-                      runApp(RushOutApp.fromDependencies(deps));
-                    } catch (e, stack) {
-                      ErrorReportingService.instance.recordError(
-                        e,
-                        stack,
-                        fatal: false,
-                        context: 'BootstrapRetry',
-                      );
-                    }
-                  },
-                  child: const Text('Retry'),
+                  onPressed: _isRetrying ? null : _retryBootstrap,
+                  child: Text(_isRetrying ? 'Retrying...' : 'Retry'),
                 ),
               ],
             ),

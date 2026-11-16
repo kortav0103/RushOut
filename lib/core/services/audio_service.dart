@@ -1,4 +1,5 @@
 import 'package:audioplayers/audioplayers.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../constants/app_constants.dart';
@@ -14,37 +15,72 @@ class AudioService with WidgetsBindingObserver {
 
   final HapticService _hapticService;
   final bool _enablePlatformAudio;
+  final AudioPlayer Function() _bgmPlayerFactory;
+  final AudioPlayer Function() _sfxPlayerFactory;
+  final Future<SharedPreferences> Function()? _prefsProvider;
 
+  final ValueNotifier<bool> _mutedNotifier = ValueNotifier<bool>(false);
   bool _isMuted = false;
   bool _isInitialized = false;
-  bool _bgmStarted = false;
+  Future<void>? _initFuture;
+  bool _bgmRequested = false;
+  bool _bgmLoaded = false;
 
   AudioService({
     HapticService? hapticService,
     bool enablePlatformAudio = true,
+    AudioPlayer Function()? bgmPlayerFactory,
+    AudioPlayer Function()? sfxPlayerFactory,
+    Future<SharedPreferences> Function()? prefsProvider,
   })  : _hapticService = hapticService ?? const HapticService(),
-        _enablePlatformAudio = enablePlatformAudio;
+        _enablePlatformAudio = enablePlatformAudio,
+        _bgmPlayerFactory = bgmPlayerFactory ?? AudioPlayer.new,
+        _sfxPlayerFactory = sfxPlayerFactory ?? AudioPlayer.new,
+        _prefsProvider = prefsProvider;
 
   bool get isMuted => _isMuted;
+  ValueListenable<bool> get mutedListenable => _mutedNotifier;
   HapticService get haptics => _hapticService;
 
-  Future<void> init() async {
-    if (_isInitialized) return;
-    _isInitialized = true;
+  void _setMutedState(bool muted) {
+    _isMuted = muted;
+    _mutedNotifier.value = muted;
+  }
 
+  Future<SharedPreferences> _getPrefs() =>
+      _prefsProvider?.call() ?? SharedPreferences.getInstance();
+
+  Future<void> init() {
+    if (_isInitialized) return Future.value();
+    final inFlight = _initFuture;
+    if (inFlight != null) return inFlight;
+
+    final future = _performInit();
+    _initFuture = future;
+    return future.whenComplete(() {
+      if (identical(_initFuture, future)) {
+        _initFuture = null;
+      }
+    });
+  }
+
+  Future<void> _performInit() async {
     try {
       WidgetsBinding.instance.addObserver(this);
     } catch (_) {}
 
     try {
-      final prefs = await SharedPreferences.getInstance();
-      _isMuted = prefs.getBool(_mutePrefKey) ?? false;
+      final prefs = await _getPrefs();
+      _setMutedState(prefs.getBool(_mutePrefKey) ?? false);
     } catch (_) {}
 
-    if (!_enablePlatformAudio) return;
+    if (!_enablePlatformAudio) {
+      _isInitialized = true;
+      return;
+    }
 
     try {
-      _bgmPlayer = AudioPlayer();
+      _bgmPlayer = _bgmPlayerFactory();
       await _bgmPlayer!.setReleaseMode(ReleaseMode.loop);
       await _bgmPlayer!.setVolume(_isMuted ? 0.0 : 0.35);
 
@@ -53,7 +89,7 @@ class AudioService with WidgetsBindingObserver {
       ).build();
 
       for (int i = 0; i < _sfxPoolSize; i++) {
-        final sfx = AudioPlayer();
+        final sfx = _sfxPlayerFactory();
         await sfx.setAudioContext(sfxContext);
         await sfx.setReleaseMode(ReleaseMode.stop);
         await sfx.setVolume(_isMuted ? 0.0 : 0.85);
@@ -63,6 +99,8 @@ class AudioService with WidgetsBindingObserver {
       _bgmPlayer = null;
       _sfxPool.clear();
     }
+
+    _isInitialized = true;
   }
 
   @override
@@ -81,7 +119,7 @@ class AudioService with WidgetsBindingObserver {
   }
 
   Future<void> startBgm() async {
-    _bgmStarted = true;
+    _bgmRequested = true;
     if (_isMuted || _bgmPlayer == null) return;
     try {
       await _bgmPlayer!.setReleaseMode(ReleaseMode.loop);
@@ -89,11 +127,12 @@ class AudioService with WidgetsBindingObserver {
         AssetSource('audio/bgm_loop.mp3'),
         volume: 0.35,
       );
+      _bgmLoaded = true;
     } catch (_) {}
   }
 
   Future<void> pauseBgm() async {
-    if (_bgmPlayer == null) return;
+    if (_bgmPlayer == null || !_bgmLoaded) return;
     try {
       await _bgmPlayer!.pause();
     } catch (_) {}
@@ -102,18 +141,18 @@ class AudioService with WidgetsBindingObserver {
   Future<void> resumeBgm() async {
     if (_isMuted || _bgmPlayer == null) return;
     try {
-      if (_bgmStarted) {
+      if (_bgmLoaded) {
         await _bgmPlayer!.resume();
-      } else {
+      } else if (_bgmRequested) {
         await startBgm();
       }
     } catch (_) {}
   }
 
   Future<bool> toggleMute() async {
-    _isMuted = !_isMuted;
+    _setMutedState(!_isMuted);
     try {
-      final prefs = await SharedPreferences.getInstance();
+      final prefs = await _getPrefs();
       await prefs.setBool(_mutePrefKey, _isMuted);
     } catch (_) {}
 
@@ -121,7 +160,7 @@ class AudioService with WidgetsBindingObserver {
       if (_bgmPlayer != null) {
         await _bgmPlayer!.setVolume(_isMuted ? 0.0 : 0.35);
         if (_isMuted) {
-          await _bgmPlayer!.pause();
+          await pauseBgm();
         } else {
           await resumeBgm();
         }
@@ -166,9 +205,14 @@ class AudioService with WidgetsBindingObserver {
       WidgetsBinding.instance.removeObserver(this);
     } catch (_) {}
     await _bgmPlayer?.dispose();
+    _bgmPlayer = null;
     for (final sfx in _sfxPool) {
       await sfx.dispose();
     }
     _sfxPool.clear();
+    _bgmRequested = false;
+    _bgmLoaded = false;
+    _isInitialized = false;
+    _mutedNotifier.dispose();
   }
 }

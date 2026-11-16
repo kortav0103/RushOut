@@ -49,12 +49,26 @@ class ErrorReportingService {
           RegExp(r'Bearer\s+[A-Za-z0-9\-_\.]+', caseSensitive: false),
           'Bearer [REDACTED]',
         )
+        .replaceAllMapped(
+          RegExp(
+            r'''(["']?(?:x-)?api[_-]?key["']?\s*[:=]\s*["']?)[A-Za-z0-9\-_\.]+''',
+            caseSensitive: false,
+          ),
+          (match) => '${match.group(1)}[REDACTED]',
+        )
         .replaceAll(
           RegExp(
             r'\b(dev|win|ios|mac|lin|and)_[A-Za-z0-9\-_]{6,}\b',
             caseSensitive: false,
           ),
           '[DEVICE_ID]',
+        )
+        .replaceAll(
+          RegExp(
+            r'\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b',
+            caseSensitive: false,
+          ),
+          '[UUID]',
         );
   }
 

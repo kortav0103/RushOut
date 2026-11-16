@@ -1,4 +1,6 @@
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../core/network/network_info.dart';
 import '../core/services/audio_service.dart';
 import '../core/services/player_identity_service.dart';
@@ -37,7 +39,21 @@ class AppDependencies {
     required this.getLeaderboardUseCase,
   });
 
+  static bool _desktopDbInitialized = false;
+
+  static void _ensureDesktopDatabaseFactory() {
+    if (_desktopDbInitialized || kIsWeb) return;
+    if (defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.linux ||
+        defaultTargetPlatform == TargetPlatform.macOS) {
+      sqfliteFfiInit();
+      databaseFactory = databaseFactoryFfi;
+      _desktopDbInitialized = true;
+    }
+  }
+
   static Future<AppDependencies> init() async {
+    _ensureDesktopDatabaseFactory();
     final audioService = AudioService();
     await audioService.init();
 
