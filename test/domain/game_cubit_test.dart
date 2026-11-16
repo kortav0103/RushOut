@@ -39,6 +39,15 @@ class _StubLeaderboardRepo implements LeaderboardRepository {
       const [];
 
   @override
+  Future<LeaderboardPage> getLeaderboardPage(
+    String challengeDate, {
+    int limit = LeaderboardRepository.defaultPageSize,
+    int offset = 0,
+    bool includeMyRank = true,
+  }) async =>
+      const LeaderboardPage(entries: []);
+
+  @override
   Future<void> submitScore({
     required String playerName,
     required String challengeDate,

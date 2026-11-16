@@ -26,6 +26,57 @@ class LeaderboardRepositoryImpl implements LeaderboardRepository {
   }
 
   @override
+  Future<LeaderboardPage> getLeaderboardPage(
+    String challengeDate, {
+    int limit = LeaderboardRepository.defaultPageSize,
+    int offset = 0,
+    bool includeMyRank = true,
+  }) async {
+    final connected = await networkInfo.isConnected;
+    if (!connected) {
+      throw const ServerException(
+        'No internet connection. Please connect to the network and tap Retry.',
+      );
+    }
+
+    final safeLimit = limit.clamp(1, 50);
+    final safeOffset = offset < 0 ? 0 : offset;
+
+    final fetched = await remoteDataSource.fetchLeaderboard(
+      challengeDate,
+      limit: safeLimit + 1,
+      offset: safeOffset,
+    );
+    final hasMore = fetched.length > safeLimit;
+    final pageEntries = hasMore
+        ? fetched.take(safeLimit).toList(growable: false)
+        : fetched;
+
+    PlayerLeaderboardRank? myRank;
+    if (includeMyRank) {
+      myRank = await remoteDataSource.fetchPlayerLeaderboardRank(challengeDate);
+    }
+
+    final currentUserId = remoteDataSource.currentUserId;
+    if (myRank == null && includeMyRank && safeOffset == 0 && currentUserId != null) {
+      for (int i = 0; i < pageEntries.length; i++) {
+        final entry = pageEntries[i];
+        if (entry.userId == currentUserId) {
+          myRank = PlayerLeaderboardRank(rank: i + 1, entry: entry);
+          break;
+        }
+      }
+    }
+
+    return LeaderboardPage(
+      entries: pageEntries,
+      myRank: myRank,
+      currentUserId: currentUserId,
+      hasMore: hasMore,
+    );
+  }
+
+  @override
   Future<void> submitScore({
     required String playerName,
     required String challengeDate,

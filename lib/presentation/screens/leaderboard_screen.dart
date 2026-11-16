@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../domain/entities/leaderboard_entry.dart';
+import '../../domain/repositories/leaderboard_repository.dart';
 import '../../domain/usecases/get_leaderboard.dart';
 import '../bloc/leaderboard_cubit.dart';
 import '../theme/daylight_theme.dart';
@@ -81,7 +82,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                     ),
                   ),
                   Text(
-                    'Top 20 • ${state.challengeDate}',
+                    '${state.challengeDate} (UTC)',
                     style: DaylightTypography.rounded(
                       color: DaylightColors.frontierAmberLip,
                       fontSize: 12,
@@ -118,7 +119,17 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
                   child: Center(
                     child: ConstrainedBox(
                       constraints: const BoxConstraints(maxWidth: 600),
-                      child: _buildBodyForState(state),
+                      child: Column(
+                        children: [
+                          _UtcDateSwitcherBar(
+                            challengeDate: state.challengeDate,
+                            canGoNext: state.canGoNextDay,
+                            onPrevious: _cubit.previousDay,
+                            onNext: _cubit.nextDay,
+                          ),
+                          Expanded(child: _buildBodyForState(state)),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -142,7 +153,7 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
       case LeaderboardViewStatus.empty:
         return EmptyStateView(
           icon: Icons.emoji_events_outlined,
-          title: 'No Scores Yet for ${state.challengeDate}',
+          title: 'No Scores Yet for ${state.challengeDate} (UTC)',
           message:
               'Be the first player to complete today\'s Daily Challenge and claim the #1 spot on the leaderboard!',
           actionLabel: 'Refresh',
@@ -153,38 +164,370 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         return ErrorStateView(
           title: 'Unable to Load Leaderboard',
           message: state.errorMessage ??
-              'Network error occurred while fetching top scores.',
+              'Unable to load the leaderboard right now. Please try again.',
           onRetry: () => _cubit.loadLeaderboard(),
         );
 
       case LeaderboardViewStatus.content:
+        final myRank = state.myRank;
+        final hasFooter = state.hasMore ||
+            state.isLoadingMore ||
+            state.loadMoreErrorMessage != null;
+        final itemCount = state.entries.length + (hasFooter ? 1 : 0);
+
         return RefreshIndicator(
           color: DaylightColors.brandRed,
           onRefresh: () => _cubit.loadLeaderboard(),
-          child: ListView.separated(
-            padding: const EdgeInsets.all(20),
-            itemCount: state.entries.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 10),
-            itemBuilder: (context, index) {
-              final entry = state.entries[index];
-              return _LeaderboardRowCard(
-                rank: index + 1,
-                entry: entry,
-              );
-            },
+          child: Column(
+            children: [
+              if (myRank != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                  child: _MyRankCard(
+                    myRank: myRank,
+                    isOutsideLoadedTop: !state.isMyRankInLoadedList,
+                    loadedCount: state.entries.length,
+                  ),
+                ),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.all(20),
+                  itemCount: itemCount,
+                  separatorBuilder: (_, __) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    if (index >= state.entries.length) {
+                      return _PaginationFooter(
+                        isLoadingMore: state.isLoadingMore,
+                        errorMessage: state.loadMoreErrorMessage,
+                        onLoadMore: _cubit.loadMore,
+                      );
+                    }
+                    final entry = state.entries[index];
+                    final rank = index + 1;
+                    return _LeaderboardRowCard(
+                      rank: rank,
+                      entry: entry,
+                      isCurrentUser: state.isCurrentUserEntry(entry, rank),
+                    );
+                  },
+                ),
+              ),
+            ],
           ),
         );
     }
   }
 }
 
+class _UtcDateSwitcherBar extends StatelessWidget {
+  final String challengeDate;
+  final bool canGoNext;
+  final VoidCallback onPrevious;
+  final VoidCallback onNext;
+
+  const _UtcDateSwitcherBar({
+    required this.challengeDate,
+    required this.canGoNext,
+    required this.onPrevious,
+    required this.onNext,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 4),
+      child: Row(
+        children: [
+          TactileKeycap(
+            onTap: onPrevious,
+            borderRadius: 14,
+            lipHeight: 2.5,
+            borderColor: DaylightColors.surfaceLip,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: const Icon(
+              Icons.chevron_left_rounded,
+              color: DaylightColors.inkPrimary,
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              decoration: BoxDecoration(
+                color: DaylightColors.surfaceWhite,
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: DaylightColors.surfaceLip),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(
+                    Icons.public_rounded,
+                    size: 16,
+                    color: DaylightColors.frontierAmberLip,
+                  ),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      '$challengeDate (UTC)',
+                      overflow: TextOverflow.ellipsis,
+                      style: DaylightTypography.rounded(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w800,
+                        color: DaylightColors.inkPrimary,
+                        tabular: true,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          TactileKeycap(
+            onTap: canGoNext ? onNext : null,
+            enabled: canGoNext,
+            surfaceColor: canGoNext
+                ? DaylightColors.surfaceWhite
+                : DaylightColors.lockedSurface,
+            lipColor:
+                canGoNext ? DaylightColors.surfaceLip : DaylightColors.lockedLip,
+            borderColor:
+                canGoNext ? DaylightColors.surfaceLip : DaylightColors.lockedLip,
+            borderRadius: 14,
+            lipHeight: 2.5,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Icon(
+              Icons.chevron_right_rounded,
+              color: canGoNext
+                  ? DaylightColors.inkPrimary
+                  : DaylightColors.lockedInk,
+              size: 20,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MyRankCard extends StatelessWidget {
+  final PlayerLeaderboardRank myRank;
+  final bool isOutsideLoadedTop;
+  final int loadedCount;
+
+  const _MyRankCard({
+    required this.myRank,
+    required this.isOutsideLoadedTop,
+    required this.loadedCount,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('my_rank_card'),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: DaylightColors.frontierFill,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: DaylightColors.frontierAmber,
+          width: 1.8,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: DaylightColors.frontierAmber.withValues(alpha: 0.14),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: DaylightColors.brandRed,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              '#${myRank.rank}',
+              style: DaylightTypography.rounded(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w900,
+                tabular: true,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      'My Rank',
+                      style: DaylightTypography.rounded(
+                        color: DaylightColors.frontierAmberLip,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                    if (isOutsideLoadedTop) ...[
+                      const SizedBox(width: 6),
+                      Flexible(
+                        child: Text(
+                          '• Outside Top $loadedCount',
+                          overflow: TextOverflow.ellipsis,
+                          style: DaylightTypography.rounded(
+                            color: DaylightColors.inkSecondary,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  myRank.entry.playerName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: DaylightTypography.rounded(
+                    color: DaylightColors.inkPrimary,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: DaylightColors.surfaceWhite,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: DaylightColors.frontierAmber.withValues(alpha: 0.5),
+              ),
+            ),
+            child: Text(
+              '${myRank.entry.movesCount} moves',
+              style: DaylightTypography.rounded(
+                color: DaylightColors.inkPrimary,
+                fontWeight: FontWeight.w900,
+                fontSize: 13,
+                tabular: true,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PaginationFooter extends StatelessWidget {
+  final bool isLoadingMore;
+  final String? errorMessage;
+  final VoidCallback onLoadMore;
+
+  const _PaginationFooter({
+    required this.isLoadingMore,
+    required this.errorMessage,
+    required this.onLoadMore,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoadingMore) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 12),
+        child: Center(
+          child: SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.5,
+              color: DaylightColors.brandRed,
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (errorMessage != null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        child: Column(
+          children: [
+            Text(
+              errorMessage!,
+              textAlign: TextAlign.center,
+              style: DaylightTypography.rounded(
+                color: DaylightColors.brandRedLip,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            TactileKeycap(
+              onTap: onLoadMore,
+              borderRadius: 14,
+              lipHeight: 3,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+              child: Text(
+                'Retry Load More',
+                style: DaylightTypography.rounded(
+                  color: DaylightColors.inkPrimary,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Center(
+        child: TactileKeycap(
+          onTap: onLoadMore,
+          borderRadius: 16,
+          lipHeight: 3,
+          borderColor: DaylightColors.surfaceLip,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+          child: Text(
+            'Load More',
+            style: DaylightTypography.rounded(
+              color: DaylightColors.inkPrimary,
+              fontSize: 14,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _LeaderboardRowCard extends StatelessWidget {
   final int rank;
   final LeaderboardEntry entry;
+  final bool isCurrentUser;
 
   const _LeaderboardRowCard({
     required this.rank,
     required this.entry,
+    this.isCurrentUser = false,
   });
 
   Color get _rankColor {
@@ -208,13 +551,17 @@ class _LeaderboardRowCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
       decoration: BoxDecoration(
-        color: DaylightColors.surfaceWhite,
+        color: isCurrentUser
+            ? DaylightColors.frontierFill
+            : DaylightColors.surfaceWhite,
         borderRadius: BorderRadius.circular(18),
         border: Border.all(
-          color: isTop3
-              ? _rankColor.withValues(alpha: 0.5)
-              : DaylightColors.surfaceLip,
-          width: isTop3 ? 1.8 : 1.3,
+          color: isCurrentUser
+              ? DaylightColors.brandRed
+              : (isTop3
+                  ? _rankColor.withValues(alpha: 0.5)
+                  : DaylightColors.surfaceLip),
+          width: isCurrentUser ? 2.0 : (isTop3 ? 1.8 : 1.3),
         ),
         boxShadow: [
           BoxShadow(
@@ -256,18 +603,46 @@ class _LeaderboardRowCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  entry.playerName,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: DaylightTypography.rounded(
-                    color: DaylightColors.inkPrimary,
-                    fontSize: 16,
-                    fontWeight: FontWeight.w800,
-                  ),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        entry.playerName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: DaylightTypography.rounded(
+                          color: DaylightColors.inkPrimary,
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    if (isCurrentUser) ...[
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: DaylightColors.brandRed,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          'YOU',
+                          style: DaylightTypography.rounded(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 0.5,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
                 Text(
-                  'Challenge Date: ${entry.challengeDate}',
+                  'Challenge Date: ${entry.challengeDate} (UTC)',
                   style: DaylightTypography.rounded(
                     color: DaylightColors.inkSecondary,
                     fontSize: 12,

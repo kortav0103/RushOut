@@ -5,6 +5,7 @@ import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import '../../core/error/exceptions.dart';
 import '../../domain/entities/move.dart';
+import '../../domain/repositories/leaderboard_repository.dart';
 import '../models/daily_challenge_model.dart';
 import '../models/score_model.dart';
 
@@ -541,9 +542,15 @@ class SupabaseRemoteDataSource {
     }
   }
 
-  /// GET /rest/v1/leaderboard_scores?challenge_date=eq.{YYYY-MM-DD}&order=moves_count.asc&limit=20
-  Future<List<ScoreModel>> fetchLeaderboard(String challengeDate) async {
+  /// GET /rest/v1/leaderboard_scores?challenge_date=eq.{YYYY-MM-DD}&order=moves_count.asc,created_at.asc&limit={limit}&offset={offset}
+  Future<List<ScoreModel>> fetchLeaderboard(
+    String challengeDate, {
+    int limit = 20,
+    int offset = 0,
+  }) async {
     _ensureConfigured();
+    final safeLimit = limit.clamp(1, 100);
+    final safeOffset = offset < 0 ? 0 : offset;
     try {
       Response<dynamic> response;
       try {
@@ -551,8 +558,11 @@ class SupabaseRemoteDataSource {
           '$_baseUrl/rest/v1/leaderboard_scores',
           queryParameters: {
             'challenge_date': 'eq.$challengeDate',
+            'select':
+                'id,user_id,player_name,challenge_date,moves_count,created_at',
             'order': 'moves_count.asc,created_at.asc',
-            'limit': '20',
+            'limit': '$safeLimit',
+            'offset': '$safeOffset',
           },
           options: Options(headers: _anonHeaders),
         );
@@ -562,8 +572,10 @@ class SupabaseRemoteDataSource {
             '$_baseUrl/rest/v1/leaderboard',
             queryParameters: {
               'challenge_date': 'eq.$challengeDate',
-              'order': 'moves_count.asc',
-              'limit': '20',
+              'select': 'id,player_name,challenge_date,moves_count,created_at',
+              'order': 'moves_count.asc,created_at.asc',
+              'limit': '$safeLimit',
+              'offset': '$safeOffset',
             },
             options: Options(headers: _anonHeaders),
           );
@@ -573,21 +585,118 @@ class SupabaseRemoteDataSource {
       }
 
       final data = response.data;
-      if (data is List) {
-        return data
-            .whereType<Map<String, dynamic>>()
-            .map(ScoreModel.fromJson)
-            .toList();
+      if (data is! List) {
+        throw const ServerException('Invalid leaderboard response from server.');
       }
-      return const [];
+      final scores = <ScoreModel>[];
+      for (final item in data) {
+        if (item is! Map<String, dynamic>) {
+          throw const ServerException('Invalid leaderboard entry format.');
+        }
+        scores.add(ScoreModel.fromJson(item));
+      }
+      return scores;
     } on DioException catch (e) {
       throw ServerException(
         _formatDioError(e, 'Failed to load Leaderboard scores'),
       );
     } catch (e) {
       if (e is ServerException) rethrow;
-      throw ServerException('Unexpected error loading Leaderboard: $e');
+      throw const ServerException('Unexpected error loading Leaderboard scores.');
     }
+  }
+
+  /// Queries the authenticated player's submitted score and exact 1-based rank
+  /// for [challengeDate]. Returns `null` if there is no active session or the
+  /// player has not submitted a score for that UTC date.
+  Future<PlayerLeaderboardRank?> fetchPlayerLeaderboardRank(
+    String challengeDate,
+  ) async {
+    if (!isConfigured) return null;
+    await loadSavedSession();
+    final session = _session;
+    if (session == null) return null;
+
+    final headers = session.isExpired
+        ? _anonHeaders
+        : _authHeaders(session.accessToken);
+
+    try {
+      final rowResponse = await _dio.get<dynamic>(
+        '$_baseUrl/rest/v1/leaderboard_scores',
+        queryParameters: {
+          'user_id': 'eq.${session.userId}',
+          'challenge_date': 'eq.$challengeDate',
+          'select':
+              'id,user_id,player_name,challenge_date,moves_count,created_at',
+          'limit': '1',
+        },
+        options: Options(headers: headers),
+      );
+
+      final rowData = rowResponse.data;
+      if (rowData is! List || rowData.isEmpty) {
+        return null;
+      }
+      final first = rowData.first;
+      if (first is! Map<String, dynamic>) {
+        throw const ServerException('Invalid player rank record format.');
+      }
+      final myEntry = ScoreModel.fromJson(first);
+
+      final aheadQuery = <String, dynamic>{
+        'challenge_date': 'eq.$challengeDate',
+        'select': 'id',
+        'limit': '1',
+      };
+      if (myEntry.createdAt != null) {
+        final ts = myEntry.createdAt!.toUtc().toIso8601String();
+        aheadQuery['or'] =
+            '(moves_count.lt.${myEntry.movesCount},and(moves_count.eq.${myEntry.movesCount},created_at.lt.$ts))';
+      } else {
+        aheadQuery['moves_count'] = 'lt.${myEntry.movesCount}';
+      }
+
+      final countResponse = await _dio.get<dynamic>(
+        '$_baseUrl/rest/v1/leaderboard_scores',
+        queryParameters: aheadQuery,
+        options: Options(
+          headers: {
+            ...headers,
+            'Prefer': 'count=exact',
+          },
+        ),
+      );
+
+      final aheadCount = _parseTotalFromContentRange(
+        countResponse.headers.value('content-range'),
+      );
+      if (aheadCount == null) {
+        return null;
+      }
+
+      return PlayerLeaderboardRank(
+        rank: aheadCount + 1,
+        entry: myEntry,
+      );
+    } on DioException catch (e) {
+      throw ServerException(
+        _formatDioError(e, 'Failed to load player rank'),
+      );
+    } catch (e) {
+      if (e is ServerException) rethrow;
+      throw const ServerException('Unexpected error loading player rank.');
+    }
+  }
+
+  static int? _parseTotalFromContentRange(String? header) {
+    if (header == null || header.trim().isEmpty) return null;
+    final slashIndex = header.lastIndexOf('/');
+    if (slashIndex == -1 || slashIndex == header.length - 1) return null;
+    final totalStr = header.substring(slashIndex + 1).trim();
+    if (totalStr == '*') return null;
+    final parsed = int.tryParse(totalStr);
+    return (parsed != null && parsed >= 0) ? parsed : null;
   }
 
   /// Queries whether the currently authenticated `auth.uid()` has already
