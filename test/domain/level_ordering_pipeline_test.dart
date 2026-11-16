@@ -116,6 +116,22 @@ void main() {
         expect(s9, greaterThanOrEqualTo(s8));
         expect(s10, lessThanOrEqualTo(s9));
       }
+
+      // First 50 levels must have diverse layouts (no near-identical variants clumped together)
+      for (int i = 0; i < 50; i++) {
+        for (int j = i + 1; j < 50; j++) {
+          final sim = LevelOrderingPipeline.boardSimilarity(
+            run1[i].boardString,
+            run1[j].boardString,
+          );
+          expect(
+            sim,
+            lessThan(0.62),
+            reason:
+                'Levels #${i + 1} and #${j + 1} should not share near-identical layout (similarity=$sim)',
+          );
+        }
+      }
     });
 
     test('Micro-Wave strictly places L9 at slot 9 (peak) and L2 at slot 10 (breather)', () {
