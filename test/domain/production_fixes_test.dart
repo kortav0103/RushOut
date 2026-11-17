@@ -237,6 +237,7 @@ void main() {
         submitScoreUseCase: SubmitScore(leaderboardRepo),
         audioService: AudioService(enablePlatformAudio: false),
         initialDateKey: '2026-11-16',
+        nowProvider: () => DateTime.utc(2026, 11, 16, 12),
       );
       await cubit.loadDailyChallenge();
 

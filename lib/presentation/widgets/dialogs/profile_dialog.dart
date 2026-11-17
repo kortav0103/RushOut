@@ -113,7 +113,7 @@ class _ProfileDialogContentState extends State<_ProfileDialogContent> {
                         ),
                       ),
                     ] else ...[
-                      _buildCloudSyncToggle(cubit, state),
+                      _buildCloudSyncToggle(context, cubit, state),
                     ],
                   ],
                   if (state.statusMessage != null) ...[
@@ -242,7 +242,12 @@ class _ProfileDialogContentState extends State<_ProfileDialogContent> {
     );
   }
 
-  Widget _buildCloudSyncToggle(ProfileCubit cubit, ProfileState state) {
+  Widget _buildCloudSyncToggle(
+    BuildContext context,
+    ProfileCubit cubit,
+    ProfileState state,
+  ) {
+    final isDeleting = state.status == ProfileActionStatus.deletingAccount;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -274,27 +279,112 @@ class _ProfileDialogContentState extends State<_ProfileDialogContent> {
           ),
         ),
         const SizedBox(height: 8),
-        Align(
-          alignment: Alignment.centerRight,
-          child: TextButton.icon(
-            onPressed: state.isBusy ? null : cubit.signOutCloudAccount,
-            icon: const Icon(
-              Icons.logout_rounded,
-              size: 16,
-              color: DaylightColors.inkSecondary,
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8,
+          runSpacing: 4,
+          children: [
+            TextButton.icon(
+              onPressed: state.isBusy
+                  ? null
+                  : () => _confirmDeleteCloudAccount(context, cubit),
+              icon: const Icon(
+                Icons.delete_forever_rounded,
+                size: 16,
+                color: DaylightColors.brandRed,
+              ),
+              label: Text(
+                isDeleting ? 'Deleting...' : 'Delete Cloud Account',
+                style: DaylightTypography.rounded(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: DaylightColors.brandRed,
+                ),
+              ),
             ),
-            label: Text(
-              'Sign Out Cloud Account',
+            TextButton.icon(
+              onPressed: state.isBusy ? null : cubit.signOutCloudAccount,
+              icon: const Icon(
+                Icons.logout_rounded,
+                size: 16,
+                color: DaylightColors.inkSecondary,
+              ),
+              label: Text(
+                'Sign Out Cloud Account',
+                style: DaylightTypography.rounded(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: DaylightColors.inkSecondary,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Future<void> _confirmDeleteCloudAccount(
+    BuildContext context,
+    ProfileCubit cubit,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: DaylightColors.surfaceWhite,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: const BorderSide(
+            color: DaylightColors.surfaceLip,
+            width: 2,
+          ),
+        ),
+        title: Text(
+          'Delete Cloud Account?',
+          style: DaylightTypography.rounded(
+            fontSize: 18,
+            fontWeight: FontWeight.w900,
+            color: DaylightColors.inkPrimary,
+          ),
+        ),
+        content: Text(
+          'This permanently deletes your linked email account, cloud profile, synced level progress, and leaderboard scores from our servers. This action cannot be undone.\n\nYour local progress on this device will be kept.',
+          style: DaylightTypography.rounded(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: DaylightColors.inkSecondary,
+          ).copyWith(height: 1.35),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: Text(
+              'Cancel',
               style: DaylightTypography.rounded(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
                 color: DaylightColors.inkSecondary,
               ),
             ),
           ),
-        ),
-      ],
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(
+              'Delete Account',
+              style: DaylightTypography.rounded(
+                fontSize: 13,
+                fontWeight: FontWeight.w900,
+                color: DaylightColors.brandRed,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
+    if (confirmed == true && mounted) {
+      await cubit.deleteCloudAccount();
+    }
   }
 
   Widget _buildEmailStep(ProfileCubit cubit, ProfileState state) {

@@ -20,7 +20,6 @@ dependencies:
   shared_preferences: ^2.3.2
   flutter_secure_storage: ^11.2.0
   connectivity_plus: ^6.0.5
-  device_info_plus: ^13.3.0
 
 dev_dependencies:
   flutter_test:
@@ -30,7 +29,7 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - .env.example
+    - assets/levels/campaign_ordered.txt
     - assets/levels/rush1000.txt
     - assets/images/vehicles/
     - assets/audio/

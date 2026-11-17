@@ -25,6 +25,7 @@ class AudioService with WidgetsBindingObserver {
   Future<void>? _initFuture;
   bool _bgmRequested = false;
   bool _bgmLoaded = false;
+  bool _isInBackground = false;
 
   AudioService({
     HapticService? hapticService,
@@ -39,6 +40,8 @@ class AudioService with WidgetsBindingObserver {
         _prefsProvider = prefsProvider;
 
   bool get isMuted => _isMuted;
+  @visibleForTesting
+  bool get isInBackground => _isInBackground;
   ValueListenable<bool> get mutedListenable => _mutedNotifier;
   HapticService get haptics => _hapticService;
 
@@ -111,23 +114,31 @@ class AudioService with WidgetsBindingObserver {
   Future<void> handleAppLifecycleState(AppLifecycleState state) async {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive ||
-        state == AppLifecycleState.hidden) {
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _isInBackground = true;
       await pauseBgm();
     } else if (state == AppLifecycleState.resumed) {
+      _isInBackground = false;
       await resumeBgm();
     }
   }
 
   Future<void> startBgm() async {
     _bgmRequested = true;
-    if (_isMuted || _bgmPlayer == null) return;
+    final player = _bgmPlayer;
+    if (_isMuted || _isInBackground || player == null) return;
     try {
-      await _bgmPlayer!.setReleaseMode(ReleaseMode.loop);
-      await _bgmPlayer!.play(
+      await player.setReleaseMode(ReleaseMode.loop);
+      await player.play(
         AssetSource('audio/bgm_loop.mp3'),
         volume: 0.35,
       );
+      if (_bgmPlayer != player) return;
       _bgmLoaded = true;
+      if (_isInBackground || _isMuted) {
+        await player.pause();
+      }
     } catch (_) {}
   }
 
@@ -139,7 +150,7 @@ class AudioService with WidgetsBindingObserver {
   }
 
   Future<void> resumeBgm() async {
-    if (_isMuted || _bgmPlayer == null) return;
+    if (_isMuted || _isInBackground || _bgmPlayer == null) return;
     try {
       if (_bgmLoaded) {
         await _bgmPlayer!.resume();
@@ -212,6 +223,7 @@ class AudioService with WidgetsBindingObserver {
     _sfxPool.clear();
     _bgmRequested = false;
     _bgmLoaded = false;
+    _isInBackground = false;
     _isInitialized = false;
     _mutedNotifier.dispose();
   }

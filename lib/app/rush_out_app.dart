@@ -3,6 +3,7 @@ import '../core/services/audio_service.dart';
 import '../core/services/player_identity_service.dart';
 import '../core/services/tutorial_service.dart';
 import '../domain/repositories/daily_challenge_repository.dart';
+import '../domain/repositories/level_repository.dart';
 import '../domain/usecases/get_leaderboard.dart';
 import '../domain/usecases/get_levels.dart';
 import '../domain/usecases/save_progress.dart';
@@ -17,6 +18,7 @@ class RushOutApp extends StatefulWidget {
   final TutorialService? tutorialService;
   final PlayerIdentityService? playerIdentityService;
   final ProfileCubit? profileCubit;
+  final LevelRepository? levelRepository;
   final GetLevels getLevelsUseCase;
   final SaveProgress saveProgressUseCase;
   final DailyChallengeRepository dailyRepository;
@@ -30,6 +32,7 @@ class RushOutApp extends StatefulWidget {
     this.tutorialService,
     this.playerIdentityService,
     this.profileCubit,
+    this.levelRepository,
     required this.getLevelsUseCase,
     required this.saveProgressUseCase,
     required this.dailyRepository,
@@ -45,6 +48,7 @@ class RushOutApp extends StatefulWidget {
       tutorialService: deps.tutorialService,
       playerIdentityService: deps.playerIdentityService,
       profileCubit: deps.profileCubit,
+      levelRepository: deps.levelRepository,
       getLevelsUseCase: deps.getLevelsUseCase,
       saveProgressUseCase: deps.saveProgressUseCase,
       dailyRepository: deps.dailyRepository,
@@ -93,6 +97,8 @@ class _RushOutAppState extends State<RushOutApp> {
         audioService: widget.audioService,
         tutorialService: widget.tutorialService ?? TutorialService(),
         profileCubit: widget.profileCubit,
+        levelRepository:
+            widget.levelRepository ?? widget.saveProgressUseCase.repository,
         getLevelsUseCase: widget.getLevelsUseCase,
         saveProgressUseCase: widget.saveProgressUseCase,
         dailyRepository: widget.dailyRepository,

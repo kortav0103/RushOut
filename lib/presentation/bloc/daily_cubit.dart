@@ -1,6 +1,4 @@
 import 'dart:async';
-import 'dart:isolate';
-import 'dart:math' as math;
 import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../core/error/exceptions.dart';
@@ -12,8 +10,6 @@ import '../../domain/entities/board_state.dart';
 import '../../domain/entities/leaderboard_entry.dart';
 import '../../domain/entities/move.dart';
 import '../../domain/repositories/daily_challenge_repository.dart';
-import '../../domain/repositories/level_repository.dart';
-import '../../domain/solver/bfs_solver.dart';
 import '../../domain/usecases/submit_score.dart';
 
 enum DailyViewStatus { loading, content, empty, error }
@@ -23,9 +19,6 @@ class DailyState extends Equatable {
   final String dateKey;
   final DailyChallenge? challenge;
   final BoardState? boardState;
-  final Move? activeHint;
-  final bool isComputingHint;
-  final int remainingHints;
   final bool isWon;
   final bool isReviewMode;
   final bool hasSolvedBoardSnapshot;
@@ -44,9 +37,6 @@ class DailyState extends Equatable {
     required this.dateKey,
     this.challenge,
     this.boardState,
-    this.activeHint,
-    this.isComputingHint = false,
-    this.remainingHints = 3,
     this.isWon = false,
     this.isReviewMode = false,
     this.hasSolvedBoardSnapshot = false,
@@ -69,10 +59,6 @@ class DailyState extends Equatable {
     String? dateKey,
     DailyChallenge? challenge,
     BoardState? boardState,
-    Move? activeHint,
-    bool clearHint = false,
-    bool? isComputingHint,
-    int? remainingHints,
     bool? isWon,
     bool? isReviewMode,
     bool? hasSolvedBoardSnapshot,
@@ -94,9 +80,6 @@ class DailyState extends Equatable {
       dateKey: dateKey ?? this.dateKey,
       challenge: challenge ?? this.challenge,
       boardState: boardState ?? this.boardState,
-      activeHint: clearHint ? null : (activeHint ?? this.activeHint),
-      isComputingHint: isComputingHint ?? this.isComputingHint,
-      remainingHints: remainingHints ?? this.remainingHints,
       isWon: isWon ?? this.isWon,
       isReviewMode: isReviewMode ?? this.isReviewMode,
       hasSolvedBoardSnapshot:
@@ -121,9 +104,6 @@ class DailyState extends Equatable {
         dateKey,
         challenge,
         boardState,
-        activeHint,
-        isComputingHint,
-        remainingHints,
         isWon,
         isReviewMode,
         hasSolvedBoardSnapshot,
@@ -143,25 +123,85 @@ class DailyCubit extends Cubit<DailyState> {
   final DailyChallengeRepository dailyRepository;
   final SubmitScore submitScoreUseCase;
   final AudioService audioService;
-  final LevelRepository? levelRepository;
-  final Future<Move?> Function(BoardState board)? hintSolver;
+  final DateTime Function() _nowProvider;
+  final bool _hasCustomInitialDateKey;
 
-  int _hintRequestId = 0;
   Future<void> _dragQueue = Future<void>.value();
+  Timer? _midnightTimer;
+  StreamSubscription<bool>? _connectivitySub;
+  bool _isLoadingChallenge = false;
 
   DailyCubit({
     required this.dailyRepository,
     required this.submitScoreUseCase,
     required this.audioService,
-    this.levelRepository,
-    this.hintSolver,
     String? initialDateKey,
-  }) : super(
+    DateTime Function()? nowProvider,
+    Stream<bool>? connectivityStream,
+  })  : _nowProvider = nowProvider ?? DateTime.now,
+        _hasCustomInitialDateKey = initialDateKey != null,
+        super(
           DailyState(
             status: DailyViewStatus.loading,
-            dateKey: initialDateKey ?? formatTodayDateKey(),
+            dateKey: initialDateKey ??
+                formatTodayDateKey((nowProvider ?? DateTime.now)()),
           ),
-        );
+        ) {
+    if (!_hasCustomInitialDateKey) {
+      _scheduleUtcMidnightRollover();
+    }
+    if (connectivityStream != null) {
+      _connectivitySub = connectivityStream.listen((isConnected) {
+        if (!isConnected || isClosed) return;
+        if (state.status == DailyViewStatus.error ||
+            state.status == DailyViewStatus.empty) {
+          loadDailyChallenge();
+        }
+      });
+    }
+  }
+
+  void _scheduleUtcMidnightRollover() {
+    _midnightTimer?.cancel();
+    final nowUtc = _nowProvider().toUtc();
+    final nextMidnightUtc = DateTime.utc(
+      nowUtc.year,
+      nowUtc.month,
+      nowUtc.day + 1,
+      0,
+      0,
+      1,
+    );
+    final delay = nextMidnightUtc.difference(nowUtc);
+    _midnightTimer = Timer(
+      delay.isNegative ? const Duration(seconds: 1) : delay,
+      () {
+        if (isClosed) return;
+        loadDailyChallenge();
+        _scheduleUtcMidnightRollover();
+      },
+    );
+  }
+
+  /// Automatically reloads today's challenge (with loading state) when
+  /// returning from an error/empty state or when the UTC date has rolled over.
+  Future<void> refreshIfNeeded() async {
+    if (isClosed || _isLoadingChallenge) return;
+    final needsDateRollover = !_hasCustomInitialDateKey &&
+        formatTodayDateKey(_nowProvider()) != state.dateKey;
+    final needsRetry = state.status == DailyViewStatus.error ||
+        state.status == DailyViewStatus.empty;
+    if (needsDateRollover || needsRetry) {
+      await loadDailyChallenge();
+    }
+  }
+
+  @override
+  Future<void> close() {
+    _midnightTimer?.cancel();
+    _connectivitySub?.cancel();
+    return super.close();
+  }
 
   /// Synchronizes with Supabase PostgreSQL CURRENT_DATE (UTC) to prevent
   /// timezone mismatch bugs.
@@ -183,19 +223,19 @@ class DailyCubit extends Cubit<DailyState> {
   }
 
   Future<void> loadDailyChallenge({String? dateKey}) async {
-    _hintRequestId++;
-    final targetDate = dateKey ?? state.dateKey;
-    final preservedHints =
-        targetDate == state.dateKey ? state.remainingHints : 3;
+    if (_isLoadingChallenge || isClosed) return;
+    _isLoadingChallenge = true;
+
+    final targetDate = dateKey ??
+        (_hasCustomInitialDateKey
+            ? state.dateKey
+            : formatTodayDateKey(_nowProvider()));
 
     emit(
       state.copyWith(
         status: DailyViewStatus.loading,
         dateKey: targetDate,
         clearError: true,
-        clearHint: true,
-        isComputingHint: false,
-        remainingHints: preservedHints,
         isWon: false,
         isReviewMode: false,
         hasSolvedBoardSnapshot: false,
@@ -208,13 +248,6 @@ class DailyCubit extends Cubit<DailyState> {
     );
 
     try {
-      int? persistedHints;
-      if (levelRepository != null) {
-        try {
-          persistedHints = await levelRepository!.getRemainingHints();
-        } catch (_) {}
-      }
-
       final challenge = await dailyRepository.getDailyChallenge(targetDate);
       if (isClosed) return;
 
@@ -222,7 +255,6 @@ class DailyCubit extends Cubit<DailyState> {
         emit(
           state.copyWith(
             status: DailyViewStatus.empty,
-            remainingHints: persistedHints ?? state.remainingHints,
             errorMessage: 'No Daily Challenge is available for $targetDate.',
           ),
         );
@@ -277,7 +309,6 @@ class DailyCubit extends Cubit<DailyState> {
             status: DailyViewStatus.content,
             challenge: challenge,
             boardState: displayBoard,
-            remainingHints: persistedHints ?? state.remainingHints,
             isWon: true,
             isReviewMode: true,
             hasSolvedBoardSnapshot: hasSolvedSnapshot,
@@ -297,7 +328,6 @@ class DailyCubit extends Cubit<DailyState> {
           status: DailyViewStatus.content,
           challenge: challenge,
           boardState: parsedInitialBoard,
-          remainingHints: persistedHints ?? state.remainingHints,
           isWon: false,
           isReviewMode: false,
           hasSolvedBoardSnapshot: false,
@@ -342,6 +372,8 @@ class DailyCubit extends Cubit<DailyState> {
               'Unable to load today\'s Daily Challenge. Please check your connection and tap Retry.',
         ),
       );
+    } finally {
+      _isLoadingChallenge = false;
     }
   }
 
@@ -408,7 +440,6 @@ class DailyCubit extends Cubit<DailyState> {
     if (nextBoard.moveCount <= prevMoves) return;
 
     if (nextBoard.isWon) {
-      _hintRequestId++;
       final currentMoves = nextBoard.moveCount;
       final stars = BoardEngine.calculateStars(
         userMoves: currentMoves,
@@ -428,8 +459,6 @@ class DailyCubit extends Cubit<DailyState> {
       emit(
         state.copyWith(
           boardState: nextBoard,
-          clearHint: true,
-          isComputingHint: false,
           isWon: true,
           isReviewMode: false,
           hasSolvedBoardSnapshot: true,
@@ -482,12 +511,9 @@ class DailyCubit extends Cubit<DailyState> {
         }
       });
     } else {
-      _hintRequestId++;
       emit(
         state.copyWith(
           boardState: nextBoard,
-          clearHint: true,
-          isComputingHint: false,
         ),
       );
       await audioService.playSlide();
@@ -497,28 +523,25 @@ class DailyCubit extends Cubit<DailyState> {
   void undo() {
     final currentBoard = state.boardState;
     if (currentBoard == null || !state.canUndo) return;
-    _hintRequestId++;
     final prevBoard = BoardEngine.undo(currentBoard);
     audioService.playUndoWhoosh();
     emit(
       state.copyWith(
         boardState: prevBoard,
-        clearHint: true,
-        isComputingHint: false,
         isWon: false,
         isReviewMode: false,
       ),
     );
   }
 
-  /// Resets the board to the day's starting layout for a fresh attempt or Replay,
-  /// while preserving the player's saved best score & submission status.
+  /// Resets the board to the day's starting layout during an active attempt.
+  /// Once the Daily Challenge is won, replaying is disallowed.
   void reset() {
+    if (state.isWon) return;
     final challenge = state.challenge;
     final currentBoard = state.boardState;
     if (challenge == null || currentBoard == null) return;
 
-    _hintRequestId++;
     final resetBoard = BoardEngine.reset(
       currentBoard,
       initialBoardString: challenge.boardString,
@@ -527,8 +550,6 @@ class DailyCubit extends Cubit<DailyState> {
     emit(
       state.copyWith(
         boardState: resetBoard,
-        clearHint: true,
-        isComputingHint: false,
         isWon: false,
         isReviewMode: false,
         hasSolvedBoardSnapshot: false,
@@ -537,62 +558,6 @@ class DailyCubit extends Cubit<DailyState> {
         clearSubmitError: true,
       ),
     );
-  }
-
-  Future<bool> requestHint() async {
-    final currentBoard = state.boardState;
-    if (currentBoard == null ||
-        state.isWon ||
-        state.isComputingHint ||
-        state.remainingHints <= 0) {
-      return true;
-    }
-
-    final requestId = ++_hintRequestId;
-    final snapshot = currentBoard;
-    final snapshotDateKey = state.dateKey;
-    emit(state.copyWith(isComputingHint: true));
-
-    final hintMove = await (hintSolver != null
-        ? hintSolver!(snapshot)
-        : Isolate.run(
-            () => BfsSolver.findNextMove(snapshot, maxVisitedStates: 100000),
-          ));
-
-    if (isClosed) return true;
-
-    if (_hintRequestId != requestId ||
-        state.isWon ||
-        state.dateKey != snapshotDateKey ||
-        state.boardState != snapshot) {
-      if (state.isComputingHint && _hintRequestId == requestId) {
-        emit(state.copyWith(isComputingHint: false));
-      }
-      return true;
-    }
-
-    if (hintMove != null) {
-      audioService.playHintPing();
-      emit(
-        state.copyWith(
-          activeHint: hintMove,
-          isComputingHint: false,
-          remainingHints: math.max(0, state.remainingHints - 1),
-        ),
-      );
-      if (levelRepository != null) {
-        try {
-          final updated = await levelRepository!.updateRemainingHints(-1);
-          if (!isClosed) {
-            emit(state.copyWith(remainingHints: updated));
-          }
-        } catch (_) {}
-      }
-      return true;
-    } else {
-      emit(state.copyWith(isComputingHint: false));
-      return false;
-    }
   }
 
   Future<bool> submitPlayerScore(String playerName) async {
@@ -618,6 +583,18 @@ class DailyCubit extends Cubit<DailyState> {
           isSubmittingScore: false,
           submitErrorMessage:
               'Complete today\'s Daily Challenge before submitting a score.',
+        ),
+      );
+      return false;
+    }
+
+    final currentTodayKey = formatTodayDateKey(_nowProvider());
+    if (state.dateKey != currentTodayKey) {
+      emit(
+        state.copyWith(
+          isSubmittingScore: false,
+          submitErrorMessage:
+              'The ${state.dateKey} Daily Challenge has closed (UTC date rolled over to $currentTodayKey). Please refresh to load today\'s new challenge.',
         ),
       );
       return false;

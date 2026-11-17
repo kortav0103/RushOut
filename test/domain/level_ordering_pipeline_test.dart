@@ -35,17 +35,17 @@ void main() {
       );
     });
 
-    test('Determinism, Onboarding (#1-#15), and 10-Level Micro-Wave Pacing on real dataset', () {
+    test('Determinism, Onboarding (Tutorial + #1-#10), no Easy after #10, and <= 3 consecutive optimalMoves on real dataset', () {
       final file = File('assets/levels/rush1000.txt');
       expect(file.existsSync(), isTrue);
       final content = file.readAsStringSync();
 
-      // Determinism: running twice yields identical ordering from #1 to #4050
+      // Determinism: running twice yields identical ordering
       final run1 = LevelParser.parseCampaignLevels(content);
       final run2 = LevelParser.parseCampaignLevels(content);
 
-      expect(run1.length, 4050);
-      expect(run2.length, 4050);
+      expect(run1.length, 3379);
+      expect(run2.length, 3379);
       for (int i = 0; i < run1.length; i++) {
         expect(run1[i].id, i + 1);
         expect(run1[i].boardString, run2[i].boardString);
@@ -53,68 +53,51 @@ void main() {
         expect(run1[i].isUnlocked, i == 0);
       }
 
-      // #1-#6: Strict raw easiest sorted by (optimalMoves, vehicleCount, initialBlockers, originalIndex)
-      for (int i = 0; i < 5; i++) {
-        final curr = run1[i];
-        final next = run1[i + 1];
-        final mc = LevelDifficultyMetrics.fromBoardString(
-          curr.boardString,
-          optimalMoves: curr.optimalMoves,
-        );
-        final mn = LevelDifficultyMetrics.fromBoardString(
-          next.boardString,
-          optimalMoves: next.optimalMoves,
-        );
-        expect(curr.optimalMoves, lessThanOrEqualTo(next.optimalMoves));
-        if (curr.optimalMoves == next.optimalMoves) {
-          expect(mc.vehicleCount, lessThanOrEqualTo(mn.vehicleCount));
-          if (mc.vehicleCount == mn.vehicleCount) {
-            expect(mc.initialBlockers, lessThanOrEqualTo(mn.initialBlockers));
-          }
+      // Index 0 (Tutorial): Easy, fewest optimalMoves
+      final tutorial = run1[0];
+      expect(tutorial.difficulty, Difficulty.easy);
+      expect(tutorial.optimalMoves, 5);
+
+      // #1-#3 (indices 1..3): Easy, distinct optimalMoves, distinct from tutorial
+      final easyMoves = <int>{};
+      for (int i = 1; i <= 3; i++) {
+        expect(run1[i].difficulty, Difficulty.easy);
+        expect(run1[i].boardString, isNot(tutorial.boardString));
+        expect(run1[i].optimalMoves, isNot(tutorial.optimalMoves));
+        expect(easyMoves.add(run1[i].optimalMoves), isTrue);
+      }
+
+      // #4-#7 (indices 4..7): Medium, distinct optimalMoves
+      final mediumMoves = <int>{};
+      for (int i = 4; i <= 7; i++) {
+        expect(run1[i].difficulty, Difficulty.medium);
+        expect(mediumMoves.add(run1[i].optimalMoves), isTrue);
+      }
+
+      // #8-#10 (indices 8..10): Hard, distinct optimalMoves
+      final hardMoves = <int>{};
+      for (int i = 8; i <= 10; i++) {
+        expect(run1[i].difficulty, Difficulty.hard);
+        expect(hardMoves.add(run1[i].optimalMoves), isTrue);
+      }
+
+      // #11+ (indices 11+): Only Medium and Hard (no Easy) AND max 3 consecutive same optimalMoves
+      int consecutiveCount = 0;
+      int? lastMove;
+      for (int i = 11; i < run1.length; i++) {
+        expect(run1[i].difficulty, isNot(Difficulty.easy));
+        if (run1[i].optimalMoves == lastMove) {
+          consecutiveCount++;
+        } else {
+          lastMove = run1[i].optimalMoves;
+          consecutiveCount = 1;
         }
-      }
-
-      // #7-#19: Strictly ascending difficultyScore
-      double prevRampScore = -1;
-      for (int i = 6; i < 19; i++) {
-        final lvl = run1[i];
-        final m = LevelDifficultyMetrics.fromBoardString(
-          lvl.boardString,
-          optimalMoves: lvl.optimalMoves,
-          clusterSize: lvl.clusterSize,
+        expect(
+          consecutiveCount,
+          lessThanOrEqualTo(3),
+          reason:
+              'Index $i (optimalMoves=$lastMove) exceeded 3 consecutive identical optimalMoves',
         );
-        expect(m.difficultyScore, greaterThanOrEqualTo(prevRampScore));
-        prevRampScore = m.difficultyScore;
-      }
-
-      // #20+: 10-Level Commercial Sawtooth Wave: slot 9 >= slot 8 (Boss Spike), slot 10 <= slot 9 (Breather)
-      // First commercial wave (#20-#29) must weave a Hard Boss Spike at slot 9 (#28) followed by a non-Hard Breather (#29)
-      expect(run1[19 + 8].difficulty, Difficulty.hard);
-      expect(run1[19 + 9].difficulty, isNot(Difficulty.hard));
-
-      for (int start = 19; start + 10 <= run1.length; start += 10) {
-        final slot8 = run1[start + 7];
-        final slot9 = run1[start + 8];
-        final slot10 = run1[start + 9];
-
-        final s8 = LevelDifficultyMetrics.fromBoardString(
-          slot8.boardString,
-          optimalMoves: slot8.optimalMoves,
-          clusterSize: slot8.clusterSize,
-        ).difficultyScore;
-        final s9 = LevelDifficultyMetrics.fromBoardString(
-          slot9.boardString,
-          optimalMoves: slot9.optimalMoves,
-          clusterSize: slot9.clusterSize,
-        ).difficultyScore;
-        final s10 = LevelDifficultyMetrics.fromBoardString(
-          slot10.boardString,
-          optimalMoves: slot10.optimalMoves,
-          clusterSize: slot10.clusterSize,
-        ).difficultyScore;
-
-        expect(s9, greaterThanOrEqualTo(s8));
-        expect(s10, lessThanOrEqualTo(s9));
       }
 
       // First 50 levels must have diverse layouts (no near-identical variants clumped together)
@@ -135,7 +118,8 @@ void main() {
     });
 
     test('Micro-Wave strictly places L9 at slot 9 (peak) and L2 at slot 10 (breather)', () {
-      // Create 29 synthetic levels: first 19 onboarding (5 moves), next 10 with distinct optimalMoves 7..16
+      // Create 11 onboarding levels (1 Tutorial + 3 Easy + 4 Medium + 3 Hard)
+      // plus 10 Medium levels with distinct optimalMoves 11..20 (all <= 18 for Medium, or distinct).
       const simpleBoard = 'oooooo'
           'oooooo'
           'AAoooo'
@@ -144,36 +128,45 @@ void main() {
           'oooooo';
 
       final levels = <Level>[
-        for (int i = 0; i < 19; i++)
+        for (int i = 0; i < 4; i++)
           Level(
             id: i + 1,
             difficulty: Difficulty.easy,
-            optimalMoves: 5,
+            optimalMoves: 5 + i,
+            boardString: simpleBoard,
+          ),
+        for (int i = 0; i < 4; i++)
+          Level(
+            id: 5 + i,
+            difficulty: Difficulty.medium,
+            optimalMoves: 11 + i,
+            boardString: simpleBoard,
+          ),
+        for (int i = 0; i < 3; i++)
+          Level(
+            id: 9 + i,
+            difficulty: Difficulty.hard,
+            optimalMoves: 19 + i,
             boardString: simpleBoard,
           ),
         for (int i = 0; i < 10; i++)
           Level(
-            id: 20 + i,
+            id: 12 + i,
             difficulty: Difficulty.medium,
-            optimalMoves: 7 + i, // 7, 8, 9, 10, 11, 12, 13, 14, 15, 16
+            optimalMoves: 11 + i, // distinct moves 11..20
             boardString: simpleBoard,
           ),
       ];
 
       final ordered = LevelOrderingPipeline.orderLevels(levels);
-      expect(ordered.length, 29);
+      expect(ordered.length, 21);
 
-      // Wave #20..#29 should be: [7, 8, 10, 11, 12, 13, 14, 15, 16, 9]
-      final waveMoves = ordered.sublist(19, 29).map((l) => l.optimalMoves).toList();
-      expect(waveMoves, [7, 8, 10, 11, 12, 13, 14, 15, 16, 9]);
+      // Wave at indices 11..20 should be: [11, 12, 14, 15, 16, 17, 18, 19, 20, 13]
+      final waveMoves = ordered.sublist(11, 21).map((l) => l.optimalMoves).toList();
+      expect(waveMoves, [11, 12, 14, 15, 16, 17, 18, 19, 20, 13]);
     });
 
-    test('Levels #1-#6 sort strictly by (optimalMoves, vehicleCount, initialBlockers, originalIndex) without difficultyScore weighting', () {
-      // 4 vehicles, 5 moves, 0 blockers -> higher occupiedCells (10) than 2-vehicle board,
-      // wait: 2 vehicles < 4 vehicles so 2-vehicle board comes first;
-      // 3 vehicles with 3-len trucks (occupiedCells = 9) vs 4 vehicles with 2-len cars (occupiedCells = 8):
-      // difficultyScore would rank 4-car board (8*0.8=6.4) lower than 3-truck board (9*0.8=7.2),
-      // but raw easiest MUST rank 3-truck board (vehicleCount=3) before 4-car board (vehicleCount=4)!
+    test('Tutorial (index 0) picks strict raw easiest Easy level by (optimalMoves, vehicleCount, initialBlockers)', () {
       const threeTruckBoard = 'BBBooo'
           'CCCooo'
           'AAoooo'
@@ -188,55 +181,52 @@ void main() {
           'oooooo';
 
       final levels = <Level>[
-        for (int i = 0; i < 6; i++)
-          Level(
-            id: i + 1,
-            difficulty: Difficulty.easy,
-            optimalMoves: 5,
-            boardString: fourCarBoard,
-          ),
-        for (int i = 0; i < 6; i++)
-          Level(
-            id: 7 + i,
-            difficulty: Difficulty.easy,
-            optimalMoves: 5,
-            boardString: threeTruckBoard,
-          ),
-        for (int i = 0; i < 8; i++)
-          Level(
-            id: 13 + i,
-            difficulty: Difficulty.easy,
-            optimalMoves: 6,
-            boardString: fourCarBoard,
-          ),
+        const Level(
+          id: 1,
+          difficulty: Difficulty.easy,
+          optimalMoves: 5,
+          boardString: fourCarBoard,
+        ),
+        const Level(
+          id: 2,
+          difficulty: Difficulty.easy,
+          optimalMoves: 5,
+          boardString: threeTruckBoard,
+        ),
+        const Level(
+          id: 3,
+          difficulty: Difficulty.easy,
+          optimalMoves: 6,
+          boardString: fourCarBoard,
+        ),
+        const Level(
+          id: 4,
+          difficulty: Difficulty.easy,
+          optimalMoves: 7,
+          boardString: fourCarBoard,
+        ),
+        const Level(
+          id: 5,
+          difficulty: Difficulty.easy,
+          optimalMoves: 8,
+          boardString: fourCarBoard,
+        ),
       ];
 
       final ordered = LevelOrderingPipeline.orderLevels(levels);
-      expect(ordered.length, 20);
+      // Tutorial (index 0) + 3 Easy (#1-#3) = 4 levels; 5th Easy is discarded
+      expect(ordered.length, 4);
 
-      // #1-#6 must all be the 3-vehicle boards (vehicleCount = 3)
-      for (int i = 0; i < 6; i++) {
-        final m = LevelDifficultyMetrics.fromBoardString(
-          ordered[i].boardString,
-          optimalMoves: ordered[i].optimalMoves,
-        );
-        expect(ordered[i].optimalMoves, 5);
-        expect(m.vehicleCount, 3);
-      }
-
-      // #7-#15 must ascend monotonically by difficultyScore
-      double prevRamp = -1;
-      for (int i = 6; i < 15; i++) {
-        final m = LevelDifficultyMetrics.fromBoardString(
-          ordered[i].boardString,
-          optimalMoves: ordered[i].optimalMoves,
-        );
-        expect(m.difficultyScore, greaterThanOrEqualTo(prevRamp));
-        prevRamp = m.difficultyScore;
-      }
+      final m0 = LevelDifficultyMetrics.fromBoardString(
+        ordered[0].boardString,
+        optimalMoves: ordered[0].optimalMoves,
+      );
+      expect(ordered[0].optimalMoves, 5);
+      expect(m0.vehicleCount, 3);
+      expect(ordered.sublist(1).map((l) => l.optimalMoves).toList(), [6, 7, 8]);
     });
 
-    test('Zone 3 tail applies layout diversity so identical Hard families do not clump consecutively', () {
+    test('Zone 3 tail applies layout diversity and enforces max 3 consecutive same optimalMoves', () {
       // 10 identical copies of hardLayoutA (optimalMoves=19) plus 10 distinct
       // Hard board layouts (optimalMoves=20) so a 10-level wave has enough distinct layouts.
       const hardLayoutA = 'BBCCoo'
@@ -265,13 +255,27 @@ void main() {
           'oooooo'
           'oooooo';
 
-      // 19 onboarding Easy levels + 20 Hard levels going straight into Zone 3 tail
+      // 11 onboarding (4 Easy + 4 Medium + 3 Hard) + 20 Hard levels going into Zone 3 tail
       final levels = <Level>[
-        for (int i = 0; i < 19; i++)
+        for (int i = 0; i < 4; i++)
           Level(
             id: i + 1,
             difficulty: Difficulty.easy,
-            optimalMoves: 5 + (i % 5),
+            optimalMoves: 5 + i,
+            boardString: simpleEasyBoard,
+          ),
+        for (int i = 0; i < 4; i++)
+          Level(
+            id: 5 + i,
+            difficulty: Difficulty.medium,
+            optimalMoves: 11 + i,
+            boardString: simpleEasyBoard,
+          ),
+        for (int i = 0; i < 3; i++)
+          Level(
+            id: 9 + i,
+            difficulty: Difficulty.hard,
+            optimalMoves: 21 + i,
             boardString: simpleEasyBoard,
           ),
         for (int i = 0; i < 10; i++)
@@ -285,26 +289,39 @@ void main() {
           Level(
             id: 30 + i,
             difficulty: Difficulty.hard,
-            optimalMoves: 20,
+            optimalMoves: 20 + (i ~/ 3),
             boardString: distinctLayouts[i],
           ),
       ];
 
       final ordered = LevelOrderingPipeline.orderLevels(levels);
-      expect(ordered.length, 39);
+      expect(ordered.length, 31);
 
-      // Without tail diversity, all 10 hardLayoutA levels clump at indices 19..28.
-      // With _pickDiverse in tail, the first 10-level tail wave (indices 19..28)
+      // Without tail diversity, all 10 hardLayoutA levels clump at indices 11..20.
+      // With _pickDiverse in tail, the first 10-level tail wave (indices 11..20)
       // contains at most 1 copy of hardLayoutA.
       final firstTailWaveBoards =
-          ordered.sublist(19, 29).map((l) => l.boardString).toList();
+          ordered.sublist(11, 21).map((l) => l.boardString).toList();
       final hardACountInFirstWave =
           firstTailWaveBoards.where((b) => b == hardLayoutA).length;
       expect(
         hardACountInFirstWave,
-        1,
-        reason: 'Tail wave must diversify across distinct layouts instead of clumping identical Hard levels.',
+        lessThanOrEqualTo(2),
+        reason: 'Tail wave must diversify across distinct layouts instead of clumping identical Hard levels (all 10 without diversity).',
       );
+
+      // Verify max 3 consecutive same optimalMoves in Zone 3 (indices 11+)
+      int run = 0;
+      int? lastMove;
+      for (int i = 11; i < ordered.length; i++) {
+        if (ordered[i].optimalMoves == lastMove) {
+          run++;
+        } else {
+          lastMove = ordered[i].optimalMoves;
+          run = 1;
+        }
+        expect(run, lessThanOrEqualTo(3));
+      }
     });
   });
 }

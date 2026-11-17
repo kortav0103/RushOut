@@ -5,30 +5,33 @@ import 'tactile_widgets.dart';
 class GameControls extends StatelessWidget {
   final bool canUndo;
   final bool canReset;
+  final bool showHint;
   final bool hintEnabled;
   final bool hasActiveHint;
   final bool isComputingHint;
   final int? remainingHints;
   final VoidCallback onUndo;
   final VoidCallback onReset;
-  final VoidCallback onHint;
+  final VoidCallback? onHint;
 
   const GameControls({
     super.key,
     required this.canUndo,
     required this.canReset,
+    this.showHint = true,
     this.hintEnabled = true,
     this.hasActiveHint = false,
     this.isComputingHint = false,
     this.remainingHints,
     required this.onUndo,
     required this.onReset,
-    required this.onHint,
+    this.onHint,
   });
 
   @override
   Widget build(BuildContext context) {
     final canHint = hintEnabled &&
+        onHint != null &&
         !isComputingHint &&
         (remainingHints == null || remainingHints! > 0);
     final hintLabel = isComputingHint
@@ -69,18 +72,20 @@ class GameControls extends StatelessWidget {
               onTap: onReset,
             ),
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: _ControlButton(
-              icon: Icons.lightbulb_rounded,
-              label: hintLabel,
-              enabled: canHint,
-              isHighlighted: hasActiveHint,
-              isLoading: isComputingHint,
-              accentColor: DaylightColors.frontierAmberLip,
-              onTap: onHint,
+          if (showHint) ...[
+            const SizedBox(width: 10),
+            Expanded(
+              child: _ControlButton(
+                icon: Icons.lightbulb_rounded,
+                label: hintLabel,
+                enabled: canHint,
+                isHighlighted: hasActiveHint,
+                isLoading: isComputingHint,
+                accentColor: DaylightColors.frontierAmberLip,
+                onTap: onHint ?? () {},
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );

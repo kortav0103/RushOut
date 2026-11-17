@@ -60,11 +60,7 @@ Future<void> _loadEnv() async {
   try {
     await dotenv.load(fileName: '.env');
   } catch (_) {
-    try {
-      await dotenv.load(fileName: '.env.example');
-    } catch (_) {
-      // Graceful fallback when no dotenv asset is used.
-    }
+    // Graceful fallback when no dotenv asset is used.
   }
 }
 

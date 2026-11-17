@@ -56,6 +56,17 @@ class ErrorReportingService {
           ),
           (match) => '${match.group(1)}[REDACTED]',
         )
+        .replaceAllMapped(
+          RegExp(
+            r'''(["']?(?:access|refresh)[_-]?token["']?\s*[:=]\s*["']?)[^\s"',}&]+''',
+            caseSensitive: false,
+          ),
+          (match) => '${match.group(1)}[REDACTED]',
+        )
+        .replaceAll(
+          RegExp(r'\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b'),
+          '[EMAIL]',
+        )
         .replaceAll(
           RegExp(
             r'\b(dev|win|ios|mac|lin|and)_[A-Za-z0-9\-_]{6,}\b',

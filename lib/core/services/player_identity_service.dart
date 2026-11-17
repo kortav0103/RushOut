@@ -473,11 +473,7 @@ class PlayerIdentityService {
     _publishSnapshot();
   }
 
-  /// Signs out of the recoverable cloud account while keeping local SQLite
-  /// campaign progress and local nickname on this device.
-  Future<void> signOutCloudAccount() async {
-    await init();
-    await remoteDataSource.signOut();
+  Future<void> _resetLocalCloudState() async {
     _cloudSyncEnabled = false;
     _hasSyncedCloud = false;
     _lastSyncedAt = null;
@@ -485,6 +481,39 @@ class PlayerIdentityService {
     await prefs.setBool(_cloudSyncEnabledKey, false);
     await prefs.remove(_lastSyncedAtKey);
     _publishSnapshot();
+  }
+
+  /// Signs out of the recoverable cloud account while keeping local SQLite
+  /// campaign progress and local nickname on this device.
+  Future<void> signOutCloudAccount() async {
+    await init();
+    await remoteDataSource.signOut();
+    await _resetLocalCloudState();
+  }
+
+  /// Permanently deletes the recoverable cloud account on the server, removes
+  /// stored tokens, and resets cloud state to Guest while preserving local
+  /// SQLite campaign progress and local nickname on this device.
+  Future<void> deleteCloudAccount() async {
+    await init();
+    if (!remoteDataSource.isConfigured) {
+      throw const ServerException(
+        'Cloud account deletion is unavailable because Supabase is not configured.',
+      );
+    }
+    if (!isRecoverable) {
+      throw const ServerException(
+        'No linked cloud account found to delete.',
+      );
+    }
+    if (!await networkInfo.isConnected) {
+      throw const ServerException(
+        'No internet connection. Connect to the internet and try again.',
+      );
+    }
+
+    await remoteDataSource.deleteCloudAccount();
+    await _resetLocalCloudState();
   }
 
   /// Performs a two-way merge sync with Supabase scoped to a verified

@@ -20,6 +20,7 @@ import 'package:rush_out/domain/usecases/submit_score.dart';
 import 'package:rush_out/presentation/bloc/profile_cubit.dart';
 import 'package:rush_out/presentation/screens/home_screen.dart';
 import 'package:rush_out/presentation/widgets/dialogs/privacy_policy_dialog.dart';
+import 'package:rush_out/presentation/widgets/dialogs/profile_dialog.dart';
 import 'package:rush_out/presentation/widgets/dialogs/username_prompt_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../helpers/in_memory_local_database_datasource.dart';
@@ -49,6 +50,8 @@ class _FakeRemoteDataSource extends SupabaseRemoteDataSource {
   bool configured;
   bool failOtpSend = false;
   bool failOtpVerify = false;
+  bool failDeleteAccount = false;
+  int deleteAccountCalls = 0;
   SupabaseSession? _fakeSession;
   Map<String, dynamic>? remoteProfile;
   List<Map<String, dynamic>> remoteProgress = [];
@@ -105,6 +108,17 @@ class _FakeRemoteDataSource extends SupabaseRemoteDataSource {
   }
 
   @override
+  Future<void> deleteCloudAccount() async {
+    deleteAccountCalls++;
+    if (failDeleteAccount) {
+      throw const ServerException('Server error deleting account');
+    }
+    _fakeSession = null;
+    remoteProfile = null;
+    remoteProgress = [];
+  }
+
+  @override
   Future<Map<String, dynamic>?> fetchPlayerProfile() async => remoteProfile;
 
   @override
@@ -139,6 +153,7 @@ class _FakeRemoteDataSource extends SupabaseRemoteDataSource {
 class _MockSupabaseHttpAdapter implements HttpClientAdapter {
   bool failOtpSend = false;
   bool failOtpVerify = false;
+  bool failDeleteAccount = false;
   Map<String, dynamic>? remoteProfile;
   List<Map<String, dynamic>> remoteProgress = [];
 
@@ -179,6 +194,15 @@ class _MockSupabaseHttpAdapter implements HttpClientAdapter {
     }
 
     if (path.endsWith('/auth/v1/logout')) {
+      return _json({}, 204);
+    }
+
+    if (path.endsWith('/rest/v1/rpc/delete_my_account') && method == 'POST') {
+      if (failDeleteAccount) {
+        return _json({'message': 'Account deletion failed'}, 500);
+      }
+      remoteProfile = null;
+      remoteProgress = [];
       return _json({}, 204);
     }
 
@@ -323,6 +347,59 @@ void main() {
       await cubit.signOutCloudAccount();
       expect(cubit.state.isRecoverable, isFalse);
       expect(cubit.state.accountMode, AccountMode.guest);
+
+      await cubit.close();
+      service.dispose();
+    });
+
+    test('deleteCloudAccount handles errors honestly and resets to Guest on success', () async {
+      final adapter = _MockSupabaseHttpAdapter();
+      final tokenStore = _InMemorySecureTokenStore();
+      final remote = SupabaseRemoteDataSource(
+        dio: Dio()..httpClientAdapter = adapter,
+        supabaseUrl: 'https://example.supabase.co',
+        supabaseAnonKey: 'anon_public_key',
+        tokenStore: tokenStore,
+      );
+      final localDb = InMemoryLocalDatabaseDataSource();
+      await localDb.upsertLevelProgress(
+        levelId: 1,
+        difficulty: 'easy',
+        bestMoves: 4,
+        stars: 3,
+        isUnlocked: true,
+      );
+      final service = PlayerIdentityService(
+        remoteDataSource: remote,
+        localDataSource: localDb,
+        tutorialService: TutorialService(),
+        networkInfo: _FakeNetworkInfo(connected: true),
+      );
+      await service.init();
+
+      final cubit = ProfileCubit(identityService: service);
+
+      // Link cloud account first
+      expect(await cubit.sendEmailOtp('driver@example.com'), isTrue);
+      expect(await cubit.verifyEmailOtp('123456'), isTrue);
+      expect(cubit.state.isRecoverable, isTrue);
+
+      // Server error keeps recoverable state intact and emits error
+      adapter.failDeleteAccount = true;
+      expect(await cubit.deleteCloudAccount(), isFalse);
+      expect(cubit.state.status, ProfileActionStatus.error);
+      expect(cubit.state.statusMessage, contains('Account deletion failed'));
+      expect(cubit.state.isRecoverable, isTrue);
+
+      // Success deletes cloud account, resets to Guest, and keeps local progress
+      adapter.failDeleteAccount = false;
+      expect(await cubit.deleteCloudAccount(), isTrue);
+      expect(cubit.state.status, ProfileActionStatus.success);
+      expect(cubit.state.isRecoverable, isFalse);
+      expect(cubit.state.accountMode, AccountMode.guest);
+      expect(cubit.state.email, isNull);
+      expect(cubit.state.statusMessage, contains('Cloud account deleted'));
+      expect((await localDb.getAllLevelProgress())[1]?['stars'], 3);
 
       await cubit.close();
       service.dispose();
@@ -481,6 +558,87 @@ void main() {
         find.text('3. Optional Email Account & Cloud Progress Sync'),
         findsOneWidget,
       );
+    });
+
+    testWidgets('ProfileDialog shows Delete Cloud Account only when recoverable and confirms before deleting', (tester) async {
+      final remote = _FakeRemoteDataSource(configured: true);
+      final localDb = InMemoryLocalDatabaseDataSource();
+      await localDb.upsertLevelProgress(
+        levelId: 1,
+        difficulty: 'easy',
+        bestMoves: 5,
+        stars: 3,
+        isUnlocked: true,
+      );
+      final service = PlayerIdentityService(
+        remoteDataSource: remote,
+        localDataSource: localDb,
+        tutorialService: TutorialService(),
+        networkInfo: _FakeNetworkInfo(connected: true),
+      );
+      await service.init();
+      final cubit = ProfileCubit(identityService: service);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: ElevatedButton(
+                onPressed: () => ProfileDialog.show(
+                  context,
+                  profileCubit: cubit,
+                ),
+                child: const Text('Open Profile'),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open Profile'));
+      await tester.pumpAndSettle();
+
+      // In Guest Mode (isRecoverable == false), Delete Cloud Account is hidden
+      expect(find.text('Delete Cloud Account'), findsNothing);
+
+      // Link Email to become recoverable
+      await tester.tap(find.text('Link Email for Cloud Backup & Recovery'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'racer@example.com');
+      await tester.tap(find.text('Send Code'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), '654321');
+      await tester.tap(find.text('Verify & Sync'));
+      await tester.pumpAndSettle();
+
+      expect(cubit.state.isRecoverable, isTrue);
+      expect(find.text('Delete Cloud Account'), findsOneWidget);
+
+      // Tap Delete Cloud Account -> shows confirmation dialog; Cancel preserves account
+      await tester.tap(find.text('Delete Cloud Account'));
+      await tester.pumpAndSettle();
+      expect(find.text('Delete Cloud Account?'), findsOneWidget);
+      await tester.tap(find.text('Cancel'));
+      await tester.pumpAndSettle();
+
+      expect(remote.deleteAccountCalls, 0);
+      expect(cubit.state.isRecoverable, isTrue);
+
+      // Tap Delete Cloud Account again -> confirm Delete Account -> deletes and reverts to Guest
+      await tester.tap(find.text('Delete Cloud Account'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delete Account'));
+      await tester.pumpAndSettle();
+
+      expect(remote.deleteAccountCalls, 1);
+      expect(cubit.state.isRecoverable, isFalse);
+      expect(cubit.state.accountMode, AccountMode.guest);
+      expect(find.text('Delete Cloud Account'), findsNothing);
+      expect(find.text('Guest Mode (Local Only)'), findsOneWidget);
+      expect((await localDb.getAllLevelProgress())[1]?['stars'], 3);
+
+      await cubit.close();
+      service.dispose();
     });
   });
 }

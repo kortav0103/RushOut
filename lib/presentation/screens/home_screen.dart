@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../core/services/audio_service.dart';
 import '../../core/services/tutorial_service.dart';
 import '../../domain/repositories/daily_challenge_repository.dart';
+import '../../domain/repositories/level_repository.dart';
 import '../../domain/usecases/get_levels.dart';
 import '../../domain/usecases/save_progress.dart';
 import '../../domain/usecases/get_leaderboard.dart';
@@ -23,6 +25,7 @@ class HomeScreen extends StatefulWidget {
   final AudioService audioService;
   final TutorialService? tutorialService;
   final ProfileCubit? profileCubit;
+  final LevelRepository? levelRepository;
   final GetLevels getLevelsUseCase;
   final SaveProgress saveProgressUseCase;
   final DailyChallengeRepository dailyRepository;
@@ -34,6 +37,7 @@ class HomeScreen extends StatefulWidget {
     required this.audioService,
     this.tutorialService,
     this.profileCubit,
+    this.levelRepository,
     required this.getLevelsUseCase,
     required this.saveProgressUseCase,
     required this.dailyRepository,
@@ -54,6 +58,12 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _tutorialService = widget.tutorialService ?? TutorialService();
     widget.audioService.startBgm();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(
+        widget.getLevelsUseCase().then<void>((_) {}, onError: (_) {}),
+      );
+    });
   }
 
   void _showErrorSnackBar(String message) {
@@ -173,6 +183,9 @@ class _HomeScreenState extends State<HomeScreen> {
           submitScoreUseCase: widget.submitScoreUseCase,
           getLeaderboardUseCase: widget.getLeaderboardUseCase,
           audioService: widget.audioService,
+          levelRepository:
+              widget.levelRepository ?? widget.saveProgressUseCase.repository,
+          profileCubit: widget.profileCubit,
           defaultPlayerName: widget.profileCubit?.state.username,
         ),
       ),

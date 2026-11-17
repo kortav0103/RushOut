@@ -10,7 +10,6 @@ import '../datasources/local_database_datasource.dart';
 import '../models/level_model.dart';
 
 class LevelRepositoryImpl implements LevelRepository {
-  static const int defaultInitialHints = 3;
   static const int maxActiveSkippedLevels = 3;
 
   final LevelAssetDataSource assetDataSource;
@@ -301,23 +300,5 @@ class LevelRepositoryImpl implements LevelRepository {
   Future<void> clearInProgressLevel(int levelId) async {
     if (levelId <= 0) return;
     await localDataSource.clearInProgressLevel(levelId);
-  }
-
-  @override
-  Future<int> getRemainingHints() async {
-    final stored = await localDataSource.getWalletValue(
-      LocalDatabaseDataSource.hintBalanceKey,
-    );
-    return stored ?? defaultInitialHints;
-  }
-
-  @override
-  Future<int> updateRemainingHints(int delta) {
-    return localDataSource.adjustWalletValue(
-      LocalDatabaseDataSource.hintBalanceKey,
-      defaultValue: defaultInitialHints,
-      delta: delta,
-      minValue: 0,
-    );
   }
 }

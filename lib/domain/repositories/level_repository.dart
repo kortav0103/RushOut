@@ -18,13 +18,6 @@ abstract class LevelRepository {
     required Difficulty difficulty,
   });
 
-  /// Returns the persisted remaining hint quota (defaults to 3 for new players).
-  Future<int> getRemainingHints();
-
-  /// Atomically applies [delta] (e.g. -1 on hint use, +1 on first 3-star win)
-  /// to the persisted hint wallet (clamped to >= 0) and returns the updated balance.
-  Future<int> updateRemainingHints(int delta);
-
   /// Returns the persisted in-progress state for [levelId], or null if none exists
   /// or if the saved board is incompatible with [expectedBoardString].
   Future<InProgressLevelState?> getInProgressLevel(

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -7,22 +8,31 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:rush_out/core/error/exceptions.dart';
 import 'package:rush_out/core/network/network_info.dart';
 import 'package:rush_out/core/services/audio_service.dart';
+import 'package:rush_out/core/services/player_identity_service.dart';
+import 'package:rush_out/core/services/tutorial_service.dart';
 import 'package:rush_out/core/utils/level_parser.dart';
+import 'package:rush_out/data/datasources/level_asset_datasource.dart';
 import 'package:rush_out/data/datasources/local_database_datasource.dart';
 import 'package:rush_out/data/datasources/supabase_remote_datasource.dart';
 import 'package:rush_out/data/models/daily_challenge_model.dart';
 import 'package:rush_out/data/repositories/daily_challenge_repository_impl.dart';
 import 'package:rush_out/data/repositories/leaderboard_repository_impl.dart';
+import 'package:rush_out/data/repositories/level_repository_impl.dart';
 import 'package:rush_out/domain/entities/leaderboard_entry.dart';
 import 'package:rush_out/domain/entities/move.dart';
 import 'package:rush_out/domain/repositories/leaderboard_repository.dart';
 import 'package:rush_out/domain/solver/bfs_solver.dart';
 import 'package:rush_out/domain/usecases/get_leaderboard.dart';
+import 'package:rush_out/domain/usecases/get_levels.dart';
+import 'package:rush_out/domain/usecases/save_progress.dart';
 import 'package:rush_out/domain/usecases/submit_score.dart';
 import 'package:rush_out/presentation/bloc/daily_cubit.dart';
+import 'package:rush_out/presentation/bloc/profile_cubit.dart';
 import 'package:rush_out/presentation/screens/daily_screen.dart';
+import 'package:rush_out/presentation/screens/home_screen.dart';
 import 'package:rush_out/presentation/screens/leaderboard_screen.dart';
 import 'package:rush_out/presentation/widgets/daily_win_dialog.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../helpers/in_memory_local_database_datasource.dart';
 
@@ -231,7 +241,7 @@ class _FakeWidgetRemoteDataSource extends SupabaseRemoteDataSource {
     required this.boardString,
     required this.optimalMoves,
     this.userSubmission,
-  });
+  }) : super(tokenStore: _InMemoryTokenStore());
 
   @override
   bool get isConfigured => true;
@@ -546,7 +556,7 @@ void main() {
   });
 
   group('DailyCubit Best-Score Preservation, Reopen Solved Board & Validation', () {
-    test('Reopening completed Daily restores actual solved board (not starting board with A hidden) and Replay worse score still submits best score', () async {
+    test('Reopening completed Daily restores actual solved board (not starting board with A hidden) and blocks Replay after win', () async {
       final localDb = InMemoryLocalDatabaseDataSource();
       final adapter = _DailyBackendFakeAdapter(
         challengeDate: todayKey,
@@ -570,12 +580,15 @@ void main() {
       );
       final audio = AudioService(enablePlatformAudio: false);
 
+      final fixedNow = DateTime.utc(2026, 11, 16, 12);
+
       // 1. Play and win in optimal 2 moves
       final cubit1 = DailyCubit(
         dailyRepository: dailyRepo,
         submitScoreUseCase: SubmitScore(leaderboardRepo),
         audioService: audio,
         initialDateKey: todayKey,
+        nowProvider: () => fixedNow,
       );
       await cubit1.loadDailyChallenge();
       await cubit1.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
@@ -592,6 +605,7 @@ void main() {
         submitScoreUseCase: SubmitScore(leaderboardRepo),
         audioService: audio,
         initialDateKey: todayKey,
+        nowProvider: () => fixedNow,
       );
       await cubit2.loadDailyChallenge();
 
@@ -609,24 +623,14 @@ void main() {
       expect(cubit2.state.submitErrorMessage, isNotNull);
       expect(cubit2.state.submitErrorMessage, contains('nickname'));
 
-      // 4. Tap Replay (reset) and solve WORSE in 4 moves!
+      // 4. Attempting to reset/replay after winning is blocked
       cubit2.reset();
-      expect(cubit2.state.isWon, isFalse);
-      expect(cubit2.state.bestMoves, 2);
-
-      await cubit2.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
-      await cubit2.onVehicleDragEnd('A', draggedRow: 2.0, draggedCol: 1.0);
-      await cubit2.onVehicleDragEnd('A', draggedRow: 2.0, draggedCol: 2.0);
-      await cubit2.onVehicleDragEnd('A', draggedRow: 2.0, draggedCol: 4.0);
-
       expect(cubit2.state.isWon, isTrue);
-      expect(cubit2.state.boardState!.moveCount, 4);
-      // Best score must stay 2!
       expect(cubit2.state.bestMoves, 2);
       expect(cubit2.state.challenge!.userMoves, 2);
       expect(cubit2.state.challenge!.bestMoveHistory.length, 2);
 
-      // 5. Submit score -> MUST submit the 2-move bestMoveHistory, NOT the 4-move replay!
+      // 5. Submit score -> submits the 2-move bestMoveHistory
       final submitted = await cubit2.submitPlayerScore('BestKeeper');
       expect(submitted, isTrue);
       expect(cubit2.state.scoreSubmitted, isTrue);
@@ -635,6 +639,135 @@ void main() {
       expect(adapter.serverLeaderboardRows.first['moves_count'], 2);
 
       await cubit2.close();
+    });
+
+    test('submitPlayerScore rejects stale challenge after UTC midnight rollover without calling submit API [EDGE-01]', () async {
+      final localDb = InMemoryLocalDatabaseDataSource();
+      final adapter = _DailyBackendFakeAdapter(
+        challengeDate: todayKey,
+        boardString: sampleBoard,
+        optimalMoves: 2,
+      );
+      final remote = SupabaseRemoteDataSource(
+        dio: Dio()..httpClientAdapter = adapter,
+        supabaseUrl: 'https://example.supabase.co',
+        supabaseAnonKey: 'anon_key',
+        tokenStore: _InMemoryTokenStore(),
+      );
+      final dailyRepo = DailyChallengeRepositoryImpl(
+        remoteDataSource: remote,
+        localDataSource: localDb,
+        networkInfo: _MutableNetworkInfo(online: true),
+      );
+      final leaderboardRepo = LeaderboardRepositoryImpl(
+        remoteDataSource: remote,
+        networkInfo: _MutableNetworkInfo(online: true),
+      );
+
+      DateTime currentUtc = DateTime.utc(2026, 11, 16, 23, 59);
+      final cubit = DailyCubit(
+        dailyRepository: dailyRepo,
+        submitScoreUseCase: SubmitScore(leaderboardRepo),
+        audioService: AudioService(enablePlatformAudio: false),
+        nowProvider: () => currentUtc,
+      );
+
+      await cubit.loadDailyChallenge();
+      expect(cubit.state.dateKey, '2026-11-16');
+
+      await cubit.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
+      await cubit.onVehicleDragEnd('A', draggedRow: 2.0, draggedCol: 4.0);
+      expect(cubit.state.isWon, isTrue);
+
+      // Clock rolls past UTC midnight to 2026-11-17
+      currentUtc = DateTime.utc(2026, 11, 17, 0, 1);
+      final requestCountBeforeSubmit = adapter.requests.length;
+
+      final submitted = await cubit.submitPlayerScore('NightOwl');
+      expect(submitted, isFalse);
+      expect(cubit.state.scoreSubmitted, isFalse);
+      expect(cubit.state.submitErrorMessage, isNotNull);
+      expect(cubit.state.submitErrorMessage, contains('2026-11-16'));
+      expect(cubit.state.submitErrorMessage, contains('closed'));
+      expect(cubit.state.submitErrorMessage, contains('refresh'));
+      // Must not call submit RPC
+      expect(adapter.requests.length, requestCountBeforeSubmit);
+      expect(adapter.serverLeaderboardRows, isEmpty);
+
+      // Refreshing DailyCubit loads the new UTC date's challenge
+      adapter.challengeDate = '2026-11-17';
+      await cubit.loadDailyChallenge();
+      expect(cubit.state.dateKey, '2026-11-17');
+      expect(cubit.state.status, DailyViewStatus.content);
+
+      await cubit.close();
+    });
+
+    test('DailyCubit auto-reloads with loading state on connectivity restore and UTC rollover', () async {
+      final localDb = InMemoryLocalDatabaseDataSource();
+      final adapter = _DailyBackendFakeAdapter(
+        challengeDate: '2026-11-16',
+        boardString: sampleBoard,
+        optimalMoves: 2,
+      );
+      final remote = SupabaseRemoteDataSource(
+        dio: Dio()..httpClientAdapter = adapter,
+        supabaseUrl: 'https://example.supabase.co',
+        supabaseAnonKey: 'anon_key',
+        tokenStore: _InMemoryTokenStore(),
+      );
+      final net = _MutableNetworkInfo(online: false);
+      final dailyRepo = DailyChallengeRepositoryImpl(
+        remoteDataSource: remote,
+        localDataSource: localDb,
+        networkInfo: net,
+      );
+      final leaderboardRepo = LeaderboardRepositoryImpl(
+        remoteDataSource: remote,
+        networkInfo: net,
+      );
+      final audio = AudioService(enablePlatformAudio: false);
+
+      var nowUtc = DateTime.utc(2026, 11, 16, 23, 59, 50);
+      final connectivityController = StreamController<bool>.broadcast();
+
+      final cubit = DailyCubit(
+        dailyRepository: dailyRepo,
+        submitScoreUseCase: SubmitScore(leaderboardRepo),
+        audioService: audio,
+        nowProvider: () => nowUtc,
+        connectivityStream: connectivityController.stream,
+      );
+
+      final statuses = <DailyViewStatus>[];
+      final sub = cubit.stream.listen((s) => statuses.add(s.status));
+
+      // Offline initial load -> error
+      await cubit.loadDailyChallenge();
+      expect(cubit.state.status, DailyViewStatus.error);
+
+      // Network restored -> auto-reloads with loading -> content
+      net.online = true;
+      connectivityController.add(true);
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      expect(cubit.state.status, DailyViewStatus.content);
+      expect(cubit.state.dateKey, '2026-11-16');
+      expect(statuses, contains(DailyViewStatus.loading));
+
+      // UTC midnight rollover -> refreshIfNeeded auto-reloads with loading -> content
+      statuses.clear();
+      nowUtc = DateTime.utc(2026, 11, 17, 0, 0, 2);
+      adapter.challengeDate = '2026-11-17';
+      await cubit.refreshIfNeeded();
+
+      expect(statuses.first, DailyViewStatus.loading);
+      expect(cubit.state.status, DailyViewStatus.content);
+      expect(cubit.state.dateKey, '2026-11-17');
+
+      await sub.cancel();
+      await connectivityController.close();
+      await cubit.close();
     });
   });
 
@@ -650,7 +783,7 @@ void main() {
     }
 
     testWidgets(
-      'Reopening solved DailyScreen shows Review banner with Replay & Submit, and empty submit shows clear validation error in DailyWinDialog',
+      'Reopening solved DailyScreen shows completed notification card without Replay, and empty submit shows clear validation error in DailyWinDialog',
       (tester) async {
       final localDb = InMemoryLocalDatabaseDataSource();
       final remote = _FakeWidgetRemoteDataSource(
@@ -694,16 +827,20 @@ void main() {
       );
       await pumpFrames(tester);
 
-      // Review banner + Replay + Submit visible immediately
-      expect(find.textContaining('Completed • Best: 2 moves'), findsOneWidget);
-      expect(find.text('Replay'), findsOneWidget);
-      expect(find.text('Submit'), findsOneWidget);
+      // Completed notification card visible immediately without Replay or Refresh
+      expect(find.byIcon(Icons.refresh_rounded), findsNothing);
+      expect(find.text('DAILY CHALLENGE COMPLETED'), findsOneWidget);
+      expect(find.text('2 moves'), findsWidgets);
+      expect(find.text('Replay'), findsNothing);
+      expect(find.text('Replay Puzzle'), findsNothing);
+      expect(find.text('Submit Score'), findsOneWidget);
 
-      // Open DailyWinDialog via Submit button
-      await tester.tap(find.text('Submit'));
+      // Open DailyWinDialog via Submit Score button
+      await tester.tap(find.text('Submit Score'));
       await pumpFrames(tester);
 
       expect(find.byType(DailyWinDialog), findsOneWidget);
+      expect(find.text('Replay'), findsNothing);
 
       // Submit with empty nickname -> clear validation error shown
       await tester.tap(find.text('Submit Score (2 moves)'));
@@ -714,12 +851,17 @@ void main() {
       );
 
       // Navigate independently to LeaderboardScreen from DailyWinDialog
-      await tester.tap(find.text('Leaderboard'));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(DailyWinDialog),
+          matching: find.text('Leaderboard'),
+        ),
+      );
       await pumpFrames(tester);
       expect(find.byType(LeaderboardScreen), findsOneWidget);
     });
 
-    testWidgets('Server-synced completion without local solved snapshot shows Summary card with Replay Puzzle instead of broken board', (tester) async {
+    testWidgets('Server-synced completion without local solved snapshot shows completed notification card without Replay', (tester) async {
       final remote = _FakeWidgetRemoteDataSource(
         challengeDate: todayKey,
         boardString: sampleBoard,
@@ -750,13 +892,111 @@ void main() {
       await pumpFrames(tester);
 
       expect(find.text('DAILY CHALLENGE COMPLETED'), findsOneWidget);
-      expect(find.text('Submitted score: 2 moves'), findsOneWidget);
-      expect(find.text('Replay Puzzle'), findsOneWidget);
+      expect(find.text('2 moves'), findsWidgets);
+      expect(find.textContaining('Submitted'), findsOneWidget);
+      expect(find.text('Replay Puzzle'), findsNothing);
+      expect(find.text('Replay'), findsNothing);
+      expect(find.text('Leaderboard'), findsWidgets);
+    });
 
-      // Tapping Replay Puzzle transitions into playable board
-      await tester.tap(find.text('Replay Puzzle'));
+    testWidgets('Guest Mode auto-saves submitted Daily nickname to ProfileCubit and syncs to HomeScreen [FUNC-02]', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final liveTodayKey = DailyCubit.formatTodayDateKey();
+      final localDb = InMemoryLocalDatabaseDataSource();
+      final remote = _FakeWidgetRemoteDataSource(
+        challengeDate: liveTodayKey,
+        boardString: sampleBoard,
+        optimalMoves: 2,
+      );
+      final net = _MutableNetworkInfo(online: true);
+      final identityService = PlayerIdentityService(
+        remoteDataSource: remote,
+        localDataSource: localDb,
+        tutorialService: TutorialService(),
+        networkInfo: net,
+      );
+      await identityService.init();
+      final profileCubit = ProfileCubit(identityService: identityService);
+      expect(profileCubit.state.hasUsername, isFalse);
+
+      final levelRepo = LevelRepositoryImpl(
+        assetDataSource: LevelAssetDataSource(),
+        localDataSource: localDb,
+      );
+      final dailyRepo = DailyChallengeRepositoryImpl(
+        remoteDataSource: remote,
+        localDataSource: localDb,
+        networkInfo: net,
+      );
+      final leaderboardRepo = LeaderboardRepositoryImpl(
+        remoteDataSource: remote,
+        networkInfo: net,
+      );
+
+      // Pre-solve today's puzzle so Submit button is available in Review banner
+      await dailyRepo.getDailyChallenge(liveTodayKey);
+      await dailyRepo.saveVerifiedCompletion(
+        dateKey: liveTodayKey,
+        userMoves: 2,
+        solvedBoardString: 'oooooo'
+            'oooooo'
+            'ooooAA'
+            'oooBoo'
+            'oooBoo'
+            'oooooo',
+        moveHistory: const [
+          Move(vehicleId: 'B', fromRow: 1, fromCol: 3, toRow: 3, toCol: 3),
+          Move(vehicleId: 'A', fromRow: 2, fromCol: 0, toRow: 2, toCol: 4),
+        ],
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HomeScreen(
+            audioService: AudioService(enablePlatformAudio: false),
+            profileCubit: profileCubit,
+            levelRepository: levelRepo,
+            getLevelsUseCase: GetLevels(levelRepo),
+            saveProgressUseCase: SaveProgress(levelRepo),
+            dailyRepository: dailyRepo,
+            submitScoreUseCase: SubmitScore(leaderboardRepo),
+            getLeaderboardUseCase: GetLeaderboard(leaderboardRepo),
+          ),
+        ),
+      );
       await pumpFrames(tester);
-      expect(find.textContaining('Replaying • Best today: 2 moves'), findsOneWidget);
+
+      expect(find.text('Guest Driver'), findsOneWidget);
+
+      // Navigate from HomeScreen -> DailyScreen -> DailyWinDialog
+      await tester.tap(find.text('DAILY CHALLENGE'));
+      await pumpFrames(tester);
+      expect(find.byType(DailyScreen), findsOneWidget);
+
+      await tester.tap(find.text('Submit Score'));
+      await pumpFrames(tester);
+      expect(find.byType(DailyWinDialog), findsOneWidget);
+
+      await tester.enterText(find.byType(TextField), 'GuestHero');
+      await tester.tap(find.text('Submit Score (2 moves)'));
+      await pumpFrames(tester);
+
+      expect(find.text('Score submitted (2 moves)!'), findsOneWidget);
+      expect(profileCubit.state.hasUsername, isTrue);
+      expect(profileCubit.state.username, 'GuestHero');
+
+      // Close dialog and pop back to HomeScreen -> synced username appears
+      await tester.tap(find.byIcon(Icons.close_rounded));
+      await pumpFrames(tester);
+      await tester.tap(find.byIcon(Icons.arrow_back_rounded));
+      await pumpFrames(tester);
+
+      expect(find.byType(HomeScreen), findsOneWidget);
+      expect(find.text('GuestHero'), findsOneWidget);
+      expect(find.text('Guest Driver'), findsNothing);
+
+      await profileCubit.close();
+      identityService.dispose();
     });
   });
 }

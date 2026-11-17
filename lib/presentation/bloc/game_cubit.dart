@@ -5,6 +5,7 @@ import 'package:equatable/equatable.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/services/audio_service.dart';
+import '../../core/services/error_reporting_service.dart';
 import '../../core/services/tutorial_service.dart';
 import '../../core/utils/level_parser.dart';
 import '../../domain/engine/board_engine.dart';
@@ -18,6 +19,7 @@ import '../../domain/usecases/save_progress.dart';
 
 class GameState extends Equatable {
   static const int maxActiveSkippedLevels = 3;
+  static const int defaultHintsPerLevel = 2;
 
   final Level level;
   final List<Level> campaignLevels;
@@ -34,6 +36,7 @@ class GameState extends Equatable {
   final List<Move> tutorialSteps;
   final int tutorialStepIndex;
   final Level? tutorialReturnLevel;
+  final String? saveErrorMessage;
 
   const GameState({
     required this.level,
@@ -42,7 +45,7 @@ class GameState extends Equatable {
     required this.boardState,
     this.activeHint,
     this.isComputingHint = false,
-    this.remainingHints = 3,
+    this.remainingHints = defaultHintsPerLevel,
     this.isWon = false,
     this.earnedStars = 0,
     this.isMuted = false,
@@ -51,6 +54,7 @@ class GameState extends Equatable {
     this.tutorialSteps = const [],
     this.tutorialStepIndex = 0,
     this.tutorialReturnLevel,
+    this.saveErrorMessage,
   });
 
   bool get canUndo => boardState.canUndo && !isWon && !isTutorialMode;
@@ -172,6 +176,8 @@ class GameState extends Equatable {
     int? tutorialStepIndex,
     Level? tutorialReturnLevel,
     bool clearTutorialReturnLevel = false,
+    String? saveErrorMessage,
+    bool clearSaveError = false,
   }) {
     return GameState(
       level: level ?? this.level,
@@ -191,6 +197,9 @@ class GameState extends Equatable {
       tutorialReturnLevel: clearTutorialReturnLevel
           ? null
           : (tutorialReturnLevel ?? this.tutorialReturnLevel),
+      saveErrorMessage: clearSaveError
+          ? null
+          : (saveErrorMessage ?? this.saveErrorMessage),
     );
   }
 
@@ -211,6 +220,7 @@ class GameState extends Equatable {
         tutorialSteps,
         tutorialStepIndex,
         tutorialReturnLevel,
+        saveErrorMessage,
       ];
 }
 
@@ -225,7 +235,6 @@ class GameCubit extends Cubit<GameState> {
   int _hintRequestId = 0;
   int _tutorialRequestId = 0;
   int _boardEpoch = 0;
-  bool _hintsMutatedLocally = false;
   Future<void> _persistenceQueue = Future<void>.value();
 
   GameCubit({
@@ -249,7 +258,6 @@ class GameCubit extends Cubit<GameState> {
             tutorialReturnLevel: tutorialReturnLevel,
           ),
         ) {
-    _loadRemainingHints();
     if (isTutorialMode) {
       _solveTutorialSteps(
         state.boardState,
@@ -259,27 +267,6 @@ class GameCubit extends Cubit<GameState> {
     } else {
       _restoreInProgressState(level, expectedEpoch: _boardEpoch);
     }
-  }
-
-  Future<void> _loadRemainingHints() async {
-    final repo = levelRepository;
-    if (repo == null) return;
-    try {
-      final persisted = await repo.getRemainingHints();
-      if (isClosed || _hintsMutatedLocally) return;
-      emit(state.copyWith(remainingHints: persisted));
-    } catch (_) {}
-  }
-
-  Future<void> _persistHintDelta(int delta) async {
-    final repo = levelRepository;
-    if (repo == null || delta == 0) return;
-    try {
-      final updated = await repo.updateRemainingHints(delta);
-      if (!isClosed) {
-        emit(state.copyWith(remainingHints: updated));
-      }
-    } catch (_) {}
   }
 
   static BoardState _safeParseBoard(String boardString, int optimalMoves) {
@@ -488,7 +475,7 @@ class GameCubit extends Cubit<GameState> {
         campaignLevels: state.campaignLevels,
         initialBoardString: newLevel.boardString,
         boardState: parsedState,
-        remainingHints: state.remainingHints,
+        remainingHints: GameState.defaultHintsPerLevel,
         isMuted: audioService.isMuted,
         isTutorialMode: isTutorialMode,
         isLoadingTutorial: isTutorialMode,
@@ -699,10 +686,6 @@ class GameCubit extends Cubit<GameState> {
         updatedLevel: updatedLevel,
       );
 
-      final bonusHint = (stars == 3 && currentLevel.stars < 3) ? 1 : 0;
-      if (bonusHint > 0) {
-        _hintsMutatedLocally = true;
-      }
       _hintRequestId++;
 
       // Commit state synchronously before awaiting audio/persistence so concurrent
@@ -716,7 +699,7 @@ class GameCubit extends Cubit<GameState> {
           isComputingHint: false,
           isWon: true,
           earnedStars: stars,
-          remainingHints: state.remainingHints + bonusHint,
+          clearSaveError: true,
         ),
       );
 
@@ -728,11 +711,22 @@ class GameCubit extends Cubit<GameState> {
             userMoves: nextBoard.moveCount,
             optimalMoves: nextBoard.optimalMoves,
           );
-        } catch (_) {}
-      }
-
-      if (bonusHint > 0) {
-        await _persistHintDelta(bonusHint);
+        } catch (e, stack) {
+          ErrorReportingService.instance.recordError(
+            e,
+            stack,
+            fatal: false,
+            context: 'GameCubit.onVehicleDragEnd.saveProgress',
+          );
+          if (!isClosed) {
+            emit(
+              state.copyWith(
+                saveErrorMessage:
+                    'Could not save level progress locally. Your progress may not persist.',
+              ),
+            );
+          }
+        }
       }
 
       await _clearInProgressState(currentLevel.id);
@@ -755,6 +749,7 @@ class GameCubit extends Cubit<GameState> {
           boardState: nextBoard,
           clearHint: true,
           isComputingHint: false,
+          clearSaveError: true,
         ),
       );
 
@@ -840,6 +835,7 @@ class GameCubit extends Cubit<GameState> {
           clearHint: true,
           isWon: true,
           earnedStars: stars,
+          clearSaveError: true,
         ),
       );
 
@@ -855,7 +851,22 @@ class GameCubit extends Cubit<GameState> {
             userMoves: nextBoard.moveCount,
             optimalMoves: nextBoard.optimalMoves,
           );
-        } catch (_) {}
+        } catch (e, stack) {
+          ErrorReportingService.instance.recordError(
+            e,
+            stack,
+            fatal: false,
+            context: 'GameCubit._onTutorialDragEnd.saveProgress',
+          );
+          if (!isClosed) {
+            emit(
+              state.copyWith(
+                saveErrorMessage:
+                    'Could not save level progress locally. Your progress may not persist.',
+              ),
+            );
+          }
+        }
       }
 
       await _clearInProgressState(currentLevel.id);
@@ -898,6 +909,7 @@ class GameCubit extends Cubit<GameState> {
         isComputingHint: false,
         isWon: false,
         earnedStars: 0,
+        clearSaveError: true,
       ),
     );
   }
@@ -923,6 +935,7 @@ class GameCubit extends Cubit<GameState> {
           tutorialStepIndex: 0,
           isWon: false,
           earnedStars: 0,
+          clearSaveError: true,
         ),
       );
       return;
@@ -934,6 +947,7 @@ class GameCubit extends Cubit<GameState> {
         isComputingHint: false,
         isWon: false,
         earnedStars: 0,
+        clearSaveError: true,
       ),
     );
   }
@@ -973,7 +987,6 @@ class GameCubit extends Cubit<GameState> {
     }
 
     if (hintMove != null) {
-      _hintsMutatedLocally = true;
       audioService.playHintPing();
       emit(
         state.copyWith(
@@ -982,7 +995,6 @@ class GameCubit extends Cubit<GameState> {
           remainingHints: math.max(0, state.remainingHints - 1),
         ),
       );
-      await _persistHintDelta(-1);
       return true;
     } else {
       emit(state.copyWith(isComputingHint: false));

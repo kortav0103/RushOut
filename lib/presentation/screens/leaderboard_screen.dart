@@ -148,6 +148,9 @@ class _LeaderboardScreenState extends State<LeaderboardScreen> {
         return const ShimmerLoadingView(
           isBoardLayout: false,
           itemCount: 8,
+          label: 'Loading Leaderboard',
+          subtitle: 'Fetching top scores...',
+          icon: Icons.emoji_events_rounded,
         );
 
       case LeaderboardViewStatus.empty:

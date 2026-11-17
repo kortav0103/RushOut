@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -12,6 +13,7 @@ import '../data/repositories/daily_challenge_repository_impl.dart';
 import '../data/repositories/leaderboard_repository_impl.dart';
 import '../data/repositories/level_repository_impl.dart';
 import '../domain/repositories/daily_challenge_repository.dart';
+import '../domain/repositories/level_repository.dart';
 import '../domain/usecases/get_leaderboard.dart';
 import '../domain/usecases/get_levels.dart';
 import '../domain/usecases/save_progress.dart';
@@ -24,6 +26,7 @@ class AppDependencies {
   final TutorialService tutorialService;
   final PlayerIdentityService playerIdentityService;
   final ProfileCubit profileCubit;
+  final LevelRepository levelRepository;
   final GetLevels getLevelsUseCase;
   final SaveProgress saveProgressUseCase;
   final DailyChallengeRepository dailyRepository;
@@ -35,6 +38,7 @@ class AppDependencies {
     required this.tutorialService,
     required this.playerIdentityService,
     required this.profileCubit,
+    required this.levelRepository,
     required this.getLevelsUseCase,
     required this.saveProgressUseCase,
     required this.dailyRepository,
@@ -55,65 +59,79 @@ class AppDependencies {
     }
   }
 
-  static Future<AppDependencies> init() async {
+  static Future<AppDependencies> init({
+    @visibleForTesting AudioService? audioService,
+    @visibleForTesting PlayerIdentityService? playerIdentityService,
+  }) async {
     _ensureDesktopDatabaseFactory();
-    final audioService = AudioService();
-    await audioService.init();
+    final resolvedAudioService = audioService ?? AudioService();
+    await resolvedAudioService.init();
 
-    final tutorialService = TutorialService();
-    final networkInfo = NetworkInfoImpl(Connectivity());
-    final assetDataSource = LevelAssetDataSource();
-    final localDataSource = LocalDatabaseDataSource();
-    final remoteDataSource = SupabaseRemoteDataSource();
+    try {
+      final tutorialService = TutorialService();
+      final networkInfo = NetworkInfoImpl(Connectivity());
+      final assetDataSource = LevelAssetDataSource();
+      final localDataSource = LocalDatabaseDataSource();
+      final remoteDataSource = SupabaseRemoteDataSource();
 
-    final playerIdentityService = PlayerIdentityService(
-      remoteDataSource: remoteDataSource,
-      localDataSource: localDataSource,
-      tutorialService: tutorialService,
-      networkInfo: networkInfo,
-    );
-    await playerIdentityService.init();
+      final resolvedIdentityService = playerIdentityService ??
+          PlayerIdentityService(
+            remoteDataSource: remoteDataSource,
+            localDataSource: localDataSource,
+            tutorialService: tutorialService,
+            networkInfo: networkInfo,
+          );
+      await resolvedIdentityService.init();
 
-    // Only sync with cloud on startup when the player has explicitly opted in.
-    if (playerIdentityService.isCloudSyncEnabled) {
+      // Only sync with cloud on startup when the player has explicitly opted in.
+      // Run non-blocking in the background so cold start stays instantaneous.
+      if (resolvedIdentityService.isCloudSyncEnabled) {
+        unawaited(
+          resolvedIdentityService
+              .syncWithCloud()
+              .timeout(const Duration(seconds: 2))
+              .then<void>((_) {}, onError: (_) {}),
+        );
+      }
+
+      final profileCubit = ProfileCubit(identityService: resolvedIdentityService);
+
+      final levelRepository = LevelRepositoryImpl(
+        assetDataSource: assetDataSource,
+        localDataSource: localDataSource,
+        onProgressChanged: () async {
+          if (resolvedIdentityService.isCloudSyncEnabled) {
+            await resolvedIdentityService.syncWithCloud();
+          }
+        },
+      );
+      final dailyRepository = DailyChallengeRepositoryImpl(
+        remoteDataSource: remoteDataSource,
+        localDataSource: localDataSource,
+        networkInfo: networkInfo,
+      );
+      final leaderboardRepository = LeaderboardRepositoryImpl(
+        remoteDataSource: remoteDataSource,
+        networkInfo: networkInfo,
+      );
+
+      return AppDependencies(
+        audioService: resolvedAudioService,
+        tutorialService: tutorialService,
+        playerIdentityService: resolvedIdentityService,
+        profileCubit: profileCubit,
+        levelRepository: levelRepository,
+        getLevelsUseCase: GetLevels(levelRepository),
+        saveProgressUseCase: SaveProgress(levelRepository),
+        dailyRepository: dailyRepository,
+        submitScoreUseCase: SubmitScore(leaderboardRepository),
+        getLeaderboardUseCase: GetLeaderboard(leaderboardRepository),
+      );
+    } catch (_) {
       try {
-        await playerIdentityService
-            .syncWithCloud()
-            .timeout(const Duration(seconds: 2));
+        await resolvedAudioService.dispose();
       } catch (_) {}
+      rethrow;
     }
-
-    final profileCubit = ProfileCubit(identityService: playerIdentityService);
-
-    final levelRepository = LevelRepositoryImpl(
-      assetDataSource: assetDataSource,
-      localDataSource: localDataSource,
-      onProgressChanged: () async {
-        if (playerIdentityService.isCloudSyncEnabled) {
-          await playerIdentityService.syncWithCloud();
-        }
-      },
-    );
-    final dailyRepository = DailyChallengeRepositoryImpl(
-      remoteDataSource: remoteDataSource,
-      localDataSource: localDataSource,
-      networkInfo: networkInfo,
-    );
-    final leaderboardRepository = LeaderboardRepositoryImpl(
-      remoteDataSource: remoteDataSource,
-      networkInfo: networkInfo,
-    );
-
-    return AppDependencies(
-      audioService: audioService,
-      tutorialService: tutorialService,
-      playerIdentityService: playerIdentityService,
-      profileCubit: profileCubit,
-      getLevelsUseCase: GetLevels(levelRepository),
-      saveProgressUseCase: SaveProgress(levelRepository),
-      dailyRepository: dailyRepository,
-      submitScoreUseCase: SubmitScore(leaderboardRepository),
-      getLeaderboardUseCase: GetLeaderboard(leaderboardRepository),
-    );
   }
 }

@@ -363,6 +363,29 @@ class SupabaseRemoteDataSource {
     await _clearSession();
   }
 
+  /// Permanently deletes the recoverable cloud account and all associated cloud
+  /// records via `delete_my_account()` RPC, then clears local secure storage.
+  Future<void> deleteCloudAccount() async {
+    _ensureConfigured();
+    try {
+      await _runRecoverableAuthenticated((session) async {
+        await _dio.post<dynamic>(
+          '$_baseUrl/rest/v1/rpc/delete_my_account',
+          data: const <String, dynamic>{},
+          options: Options(headers: _authHeaders(session.accessToken)),
+        );
+      });
+    } on DioException catch (e) {
+      throw ServerException(
+        _formatDioError(e, 'Failed to delete cloud account'),
+      );
+    } catch (e) {
+      if (e is ServerException) rethrow;
+      throw ServerException('Unexpected error deleting cloud account: $e');
+    }
+    await _clearSession();
+  }
+
   Future<SupabaseSession> _refreshSession(SupabaseSession current) async {
     final response = await _dio.post<dynamic>(
       '$_baseUrl/auth/v1/token',

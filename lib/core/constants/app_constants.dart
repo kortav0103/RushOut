@@ -19,10 +19,11 @@ class AppConstants {
   static const int hardMinMoves = 19;
   static const int hardMaxMoves = 25;
   static const int levelsPerDifficulty = 1350;
-  static const int totalCampaignLevels = 4050;
+  static const int totalCampaignLevels = 3379;
 
   // Asset Paths
-  static const String levelsFilePath = 'assets/levels/rush1000.txt';
+  static const String levelsFilePath = 'assets/levels/campaign_ordered.txt';
+  static const String rawLevelsFilePath = 'assets/levels/rush1000.txt';
   static const String vehiclesImageDir = 'assets/images/vehicles/';
   static const String targetCarSprite = 'assets/images/vehicles/target_car.png';
   static const List<String> car2Sprites = [

@@ -1,59 +1,18 @@
 import 'dart:convert';
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rush_out/core/services/audio_service.dart';
 import 'package:rush_out/data/datasources/level_asset_datasource.dart';
 import 'package:rush_out/data/repositories/level_repository_impl.dart';
-import 'package:rush_out/domain/entities/leaderboard_entry.dart';
 import 'package:rush_out/domain/entities/level.dart';
 import 'package:rush_out/domain/entities/move.dart';
-import 'package:rush_out/domain/repositories/daily_challenge_repository.dart';
-import 'package:rush_out/domain/repositories/leaderboard_repository.dart';
+import 'package:rush_out/domain/repositories/level_repository.dart';
 import 'package:rush_out/domain/usecases/save_progress.dart';
-import 'package:rush_out/domain/usecases/submit_score.dart';
 import 'package:rush_out/presentation/bloc/daily_cubit.dart';
 import 'package:rush_out/presentation/bloc/game_cubit.dart';
+import 'package:rush_out/presentation/screens/game_screen.dart';
+import 'package:rush_out/presentation/widgets/parking_board_widget.dart';
 import '../helpers/in_memory_local_database_datasource.dart';
-
-class _StubDailyRepo implements DailyChallengeRepository {
-  final DailyChallenge challenge;
-  _StubDailyRepo(this.challenge);
-
-  @override
-  Future<DailyChallenge> getDailyChallenge(String dateKey) async => challenge;
-
-  @override
-  Future<DailyChallenge> saveDailyCompletion({
-    required String dateKey,
-    required int userMoves,
-  }) async =>
-      challenge.copyWith(isCompleted: true, userMoves: userMoves);
-
-  @override
-  Future<DailyChallenge?> markScoreSubmitted(String dateKey) async =>
-      challenge.copyWith(scoreSubmitted: true);
-}
-
-class _StubLeaderboardRepo implements LeaderboardRepository {
-  @override
-  Future<List<LeaderboardEntry>> getLeaderboard(String challengeDate) async =>
-      const [];
-
-  @override
-  Future<LeaderboardPage> getLeaderboardPage(
-    String challengeDate, {
-    int limit = LeaderboardRepository.defaultPageSize,
-    int offset = 0,
-    bool includeMyRank = true,
-  }) async =>
-      const LeaderboardPage(entries: []);
-
-  @override
-  Future<void> submitScore({
-    required String playerName,
-    required String challengeDate,
-    required int movesCount,
-  }) async {}
-}
 
 class _DelayedReadInMemoryDb extends InMemoryLocalDatabaseDataSource {
   final Duration readDelay;
@@ -63,6 +22,39 @@ class _DelayedReadInMemoryDb extends InMemoryLocalDatabaseDataSource {
   Future<Map<String, dynamic>?> getInProgressLevel(int levelId) async {
     await Future<void>.delayed(readDelay);
     return super.getInProgressLevel(levelId);
+  }
+}
+
+class _FailingSaveProgressRepo extends Fake implements LevelRepository {
+  final LevelRepository _delegate;
+  _FailingSaveProgressRepo(this._delegate);
+
+  @override
+  Future<InProgressLevelState?> getInProgressLevel(
+    int levelId, {
+    String? expectedBoardString,
+  }) =>
+      _delegate.getInProgressLevel(
+        levelId,
+        expectedBoardString: expectedBoardString,
+      );
+
+  @override
+  Future<void> saveInProgressLevel(InProgressLevelState state) =>
+      _delegate.saveInProgressLevel(state);
+
+  @override
+  Future<void> clearInProgressLevel(int levelId) =>
+      _delegate.clearInProgressLevel(levelId);
+
+  @override
+  Future<void> saveLevelProgress({
+    required int levelId,
+    required Difficulty difficulty,
+    required int userMoves,
+    required int stars,
+  }) async {
+    throw Exception('Disk write failed');
   }
 }
 
@@ -99,13 +91,13 @@ void main() {
     test('manages board state, async Isolate hint, undo, reset, and win detection', () async {
       expect(cubit.state.boardState.moveCount, 0);
       expect(cubit.state.isWon, isFalse);
-      expect(cubit.state.remainingHints, 3);
+      expect(cubit.state.remainingHints, 2);
 
       // Request hint -> runs BfsSolver in background Isolate and decrements remainingHints
       await cubit.requestHint();
       expect(cubit.state.activeHint, isNotNull);
       expect(cubit.state.activeHint!.vehicleId, 'B');
-      expect(cubit.state.remainingHints, 2);
+      expect(cubit.state.remainingHints, 1);
 
       // Drag B down to row 3
       cubit.onVehicleDragStart('B');
@@ -128,8 +120,8 @@ void main() {
       expect(cubit.state.earnedStars, 3);
       expect(cubit.state.level.bestMoves, 2);
       expect(cubit.state.level.stars, 3);
-      // Earned 3 stars for the first time -> +1 bonus hint (2 + 1 = 3)
-      expect(cubit.state.remainingHints, 3);
+      // No 3-star bonus hint -> remainingHints stays 1
+      expect(cubit.state.remainingHints, 1);
 
       // Reset -> restores initial state
       cubit.reset();
@@ -153,7 +145,7 @@ void main() {
       // Move B out of the way so board is 1 move away from winning
       await cubit.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
       expect(cubit.state.boardState.moveCount, 1);
-      expect(cubit.state.remainingHints, 3);
+      expect(cubit.state.remainingHints, 2);
 
       // Start async BFS hint while B is at row 3, then immediately undo before Isolate returns
       final hintFuture = cubit.requestHint();
@@ -164,43 +156,10 @@ void main() {
 
       expect(cubit.state.activeHint, isNull);
       expect(cubit.state.isComputingHint, isFalse);
-      expect(cubit.state.remainingHints, 3);
+      expect(cubit.state.remainingHints, 2);
     });
 
-    test('DailyCubit requestHint ignores stale Isolate result and preserves quota when player resets mid-solve', () async {
-      final dailyCubit = DailyCubit(
-        dailyRepository: _StubDailyRepo(
-          const DailyChallenge(
-            dateKey: '2026-11-16',
-            boardString: 'oooooo'
-                'oooBoo'
-                'AAoBoo'
-                'oooooo'
-                'oooooo'
-                'oooooo',
-            optimalMoves: 2,
-          ),
-        ),
-        submitScoreUseCase: SubmitScore(_StubLeaderboardRepo()),
-        audioService: AudioService(enablePlatformAudio: false),
-        initialDateKey: '2026-11-16',
-      );
-      await dailyCubit.loadDailyChallenge();
-      await dailyCubit.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
-      expect(dailyCubit.state.remainingHints, 3);
-
-      final hintFuture = dailyCubit.requestHint();
-      dailyCubit.reset();
-
-      await hintFuture;
-
-      expect(dailyCubit.state.activeHint, isNull);
-      expect(dailyCubit.state.isComputingHint, isFalse);
-      expect(dailyCubit.state.remainingHints, 3);
-      await dailyCubit.close();
-    });
-
-    test('persists spent hint quota and first-time 3-star +1 bonus hint across exit and re-entry', () async {
+    test('defaults to 2 hints per level without 3-star bonus or cross-level persistence', () async {
       final localDb = InMemoryLocalDatabaseDataSource();
       final repo = LevelRepositoryImpl(
         assetDataSource: LevelAssetDataSource(),
@@ -234,55 +193,27 @@ void main() {
         isUnlocked: true,
       );
 
-      // Session 1: spend 1 hint (3 -> 2), then exit without solving
-      final session1 = GameCubit(
+      final cubit1 = GameCubit(
         level: level1,
+        initialLevels: const [level1, level2],
         audioService: audio,
         saveProgressUseCase: saveProgress,
       );
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      await session1.requestHint();
-      expect(session1.state.remainingHints, 2);
-      await session1.close();
+      expect(cubit1.state.remainingHints, 2);
 
-      // Session 2: re-enter -> spent quota must still be 2 (not reset to 3)
-      final session2 = GameCubit(
-        level: level1,
-        audioService: audio,
-        saveProgressUseCase: saveProgress,
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(session2.state.remainingHints, 2);
+      // Spend 1 hint (2 -> 1), then earn 3 stars -> no +1 bonus (stays 1)
+      await cubit1.requestHint();
+      expect(cubit1.state.remainingHints, 1);
+      await cubit1.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
+      await cubit1.onVehicleDragEnd('A', draggedRow: 2.0, draggedCol: 4.0);
+      expect(cubit1.state.earnedStars, 3);
+      expect(cubit1.state.remainingHints, 1);
 
-      // Earn 3 stars for the first time on level 1 -> +1 bonus hint (2 -> 3)
-      await session2.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
-      await session2.onVehicleDragEnd('A', draggedRow: 2.0, draggedCol: 4.0);
-      expect(session2.state.earnedStars, 3);
-      expect(session2.state.remainingHints, 3);
-      await session2.close();
-
-      // Session 3: enter level 2 -> earn 3 stars for first time -> 3 -> 4 hints
-      final session3 = GameCubit(
-        level: level2,
-        audioService: audio,
-        saveProgressUseCase: saveProgress,
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(session3.state.remainingHints, 3);
-      await session3.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
-      await session3.onVehicleDragEnd('A', draggedRow: 2.0, draggedCol: 4.0);
-      expect(session3.state.remainingHints, 4);
-      await session3.close();
-
-      // Session 4: exit and re-enter -> +1 bonus hint (total 4) is preserved!
-      final session4 = GameCubit(
-        level: level2.copyWith(stars: 3, bestMoves: 2),
-        audioService: audio,
-        saveProgressUseCase: saveProgress,
-      );
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-      expect(session4.state.remainingHints, 4);
-      await session4.close();
+      // Loading next level resets hints to 2
+      cubit1.loadNextLevel();
+      expect(cubit1.state.level.id, 2);
+      expect(cubit1.state.remainingHints, 2);
+      await cubit1.close();
     });
 
     test('serializes undo() -> reset() without leaving stale board and rejects late restore or incompatible board', () async {
@@ -360,6 +291,76 @@ void main() {
       expect(cubitIncompatible.state.boardState.getVehicleById('C'), isNull);
       expect(await delayedDb.getInProgressLevel(1), isNull);
       await cubitIncompatible.close();
+    });
+
+    test('GameCubit exposes saveErrorMessage when saveProgressUseCase throws on win [FUNC-03]', () async {
+      final baseRepo = LevelRepositoryImpl(
+        assetDataSource: LevelAssetDataSource(),
+        localDataSource: InMemoryLocalDatabaseDataSource(),
+      );
+      final failingRepo = _FailingSaveProgressRepo(baseRepo);
+      final failingCubit = GameCubit(
+        level: sampleLevel,
+        audioService: AudioService(enablePlatformAudio: false),
+        saveProgressUseCase: SaveProgress(failingRepo),
+      );
+
+      await failingCubit.onVehicleDragEnd('B', draggedRow: 3.0, draggedCol: 3.0);
+      await failingCubit.onVehicleDragEnd('A', draggedRow: 2.0, draggedCol: 4.0);
+
+      expect(failingCubit.state.isWon, isTrue);
+      expect(failingCubit.state.saveErrorMessage, isNotNull);
+      expect(failingCubit.state.saveErrorMessage, contains('Could not save'));
+
+      await failingCubit.close();
+    });
+
+    testWidgets('GameScreen shows SnackBar warning when saveProgressUseCase throws [FUNC-03]', (tester) async {
+      final baseRepo = LevelRepositoryImpl(
+        assetDataSource: LevelAssetDataSource(),
+        localDataSource: InMemoryLocalDatabaseDataSource(),
+      );
+      final failingRepo = _FailingSaveProgressRepo(baseRepo);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: GameScreen(
+            initialLevel: const Level(
+              id: 1,
+              difficulty: Difficulty.easy,
+              optimalMoves: 1,
+              boardString: 'oooooo'
+                  'oooooo'
+                  'oooAAo'
+                  'oooooo'
+                  'oooooo'
+                  'oooooo',
+              isUnlocked: true,
+            ),
+            allLevels: const [],
+            audioService: AudioService(enablePlatformAudio: false),
+            saveProgressUseCase: SaveProgress(failingRepo),
+          ),
+        ),
+      );
+      await tester.pump();
+
+      final boardWidth = tester.getSize(find.byType(ParkingBoardWidget)).width;
+      final cellSize = (boardWidth * (1 - 0.09)) / 6.0;
+      final center = tester.getCenter(find.text('↔').first);
+      final gesture = await tester.startGesture(center);
+      await gesture.moveBy(const Offset(20.0, 0));
+      await gesture.moveBy(Offset(cellSize - 20.0, 0));
+      await gesture.up();
+
+      for (int i = 0; i < 15; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+
+      expect(
+        find.textContaining('Could not save level progress locally'),
+        findsOneWidget,
+      );
     });
   });
 }

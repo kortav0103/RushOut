@@ -43,6 +43,7 @@ class _FakeSupabaseServerAdapter implements HttpClientAdapter {
   List<Map<String, dynamic>> storedProgress = [];
   bool rejectOtpVerification = false;
   bool failBatchOnSecondChunk = false;
+  bool failDeleteAccount = false;
   String? userIdOverride;
   Duration delay = Duration.zero;
 
@@ -101,6 +102,25 @@ class _FakeSupabaseServerAdapter implements HttpClientAdapter {
     }
 
     if (path.endsWith('/auth/v1/logout')) {
+      return _jsonResponse({}, 204);
+    }
+
+    if (path.endsWith('/rest/v1/rpc/delete_my_account') && method == 'POST') {
+      final authHeader = options.headers['Authorization'] as String? ?? '';
+      if (authHeader.contains('jwt_anon_only_token')) {
+        return _jsonResponse(
+          {'message': 'Only recoverable non-anonymous accounts can be deleted.'},
+          403,
+        );
+      }
+      if (failDeleteAccount) {
+        return _jsonResponse(
+          {'message': 'Failed to delete account on server'},
+          500,
+        );
+      }
+      storedProfile = null;
+      storedProgress.clear();
       return _jsonResponse({}, 204);
     }
 
@@ -547,6 +567,124 @@ void main() {
       expect(merged[2]?['is_skipped'], 1);
 
       service.dispose();
+    });
+
+    test('deleteCloudAccount calls delete_my_account RPC, clears SecureTokenStore, resets to Guest, and preserves local SQLite progress', () async {
+      final adapter = _FakeSupabaseServerAdapter();
+      final tokenStore = _InMemorySecureTokenStore();
+      final dio = Dio()..httpClientAdapter = adapter;
+      final remote = SupabaseRemoteDataSource(
+        dio: dio,
+        supabaseUrl: 'https://example.supabase.co',
+        supabaseAnonKey: 'anon_public_key',
+        tokenStore: tokenStore,
+      );
+      final localDb = InMemoryLocalDatabaseDataSource();
+      await localDb.upsertLevelProgress(
+        levelId: 1,
+        difficulty: 'easy',
+        bestMoves: 4,
+        stars: 3,
+        isUnlocked: true,
+      );
+      final net = _FakeNetworkInfo(connected: true);
+      final service = PlayerIdentityService(
+        remoteDataSource: remote,
+        localDataSource: localDb,
+        tutorialService: TutorialService(),
+        networkInfo: net,
+      );
+
+      // Guest cannot delete cloud account
+      await expectLater(
+        service.deleteCloudAccount(),
+        throwsA(isA<ServerException>()),
+      );
+
+      // Link cloud account and sync
+      await service.setUsername('DeleteTester');
+      await service.requestEmailOtp('delete@example.com');
+      final syncReport = await service.verifyEmailOtpAndSync(
+        email: 'delete@example.com',
+        otpCode: '123456',
+      );
+      expect(syncReport.success, isTrue);
+      expect(service.isRecoverable, isTrue);
+      expect(tokenStore.values, isNotEmpty);
+      expect(adapter.storedProfile, isNotNull);
+      expect(adapter.storedProgress, isNotEmpty);
+
+      // Offline delete throws ServerException and preserves session
+      net.connected = false;
+      await expectLater(
+        service.deleteCloudAccount(),
+        throwsA(isA<ServerException>()),
+      );
+      expect(service.isRecoverable, isTrue);
+      expect(tokenStore.values, isNotEmpty);
+
+      // Server failure throws ServerException and preserves session
+      net.connected = true;
+      adapter.failDeleteAccount = true;
+      await expectLater(
+        service.deleteCloudAccount(),
+        throwsA(
+          predicate<ServerException>(
+            (e) => e.message.contains('Failed to delete account on server'),
+          ),
+        ),
+      );
+      expect(service.isRecoverable, isTrue);
+      expect(tokenStore.values, isNotEmpty);
+
+      // Successful deletion clears remote data, clears tokenStore, resets to Guest,
+      // while keeping local SQLite progress and local nickname
+      adapter.failDeleteAccount = false;
+      await service.deleteCloudAccount();
+
+      expect(
+        adapter.requests.any(
+          (r) => r.uri.path.endsWith('/rest/v1/rpc/delete_my_account'),
+        ),
+        isTrue,
+      );
+      expect(adapter.storedProfile, isNull);
+      expect(adapter.storedProgress, isEmpty);
+      expect(tokenStore.values, isEmpty);
+      expect(service.accountMode, AccountMode.guest);
+      expect(service.isRecoverable, isFalse);
+      expect(service.email, isNull);
+      expect(service.isCloudSyncEnabled, isFalse);
+      expect(service.isCloudSynced, isFalse);
+      expect(service.lastSyncedAt, isNull);
+      expect(service.username, 'DeleteTester');
+      expect((await localDb.getAllLevelProgress())[1]?['stars'], 3);
+
+      service.dispose();
+    });
+
+    test('SupabaseRemoteDataSource.deleteCloudAccount rejects anonymous session', () async {
+      final adapter = _FakeSupabaseServerAdapter();
+      final remote = SupabaseRemoteDataSource(
+        dio: Dio()..httpClientAdapter = adapter,
+        supabaseUrl: 'https://example.supabase.co',
+        supabaseAnonKey: 'anon_public_key',
+        tokenStore: _InMemorySecureTokenStore(),
+      );
+
+      final anon = await remote.ensureAuthenticatedSession();
+      expect(anon.isAnonymous, isTrue);
+
+      await expectLater(
+        remote.deleteCloudAccount(),
+        throwsA(isA<ServerException>()),
+      );
+      expect(
+        adapter.requests.any(
+          (r) => r.uri.path.endsWith('/rest/v1/rpc/delete_my_account'),
+        ),
+        isFalse,
+      );
     });
   });
 }

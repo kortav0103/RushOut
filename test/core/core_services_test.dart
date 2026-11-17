@@ -1,9 +1,13 @@
+import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:rush_out/app/app_dependencies.dart';
 import 'package:rush_out/core/network/network_info.dart';
 import 'package:rush_out/core/services/audio_service.dart';
 import 'package:rush_out/core/services/error_reporting_service.dart';
+import 'package:rush_out/core/services/player_identity_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class _FakeConnectivity extends Fake implements Connectivity {
@@ -22,6 +26,7 @@ class _FakeAudioPlayer extends Fake implements AudioPlayer {
   int disposeCalls = 0;
   double? lastVolume;
   Source? lastSource;
+  Future<void> Function()? onPlay;
 
   @override
   Future<void> setAudioContext(AudioContext ctx) async {}
@@ -46,6 +51,9 @@ class _FakeAudioPlayer extends Fake implements AudioPlayer {
     playCalls++;
     lastSource = source;
     if (volume != null) lastVolume = volume;
+    if (onPlay != null) {
+      await onPlay!();
+    }
   }
 
   @override
@@ -66,6 +74,14 @@ class _FakeAudioPlayer extends Fake implements AudioPlayer {
   @override
   Future<void> dispose() async {
     disposeCalls++;
+  }
+}
+
+class _FailingPlayerIdentityService extends Fake
+    implements PlayerIdentityService {
+  @override
+  Future<void> init() async {
+    throw StateError('Simulated identity initialization failure');
   }
 }
 
@@ -176,6 +192,103 @@ void main() {
       expect(scrubbed.contains('dev_12345678'), isFalse);
       expect(scrubbed, contains('[DEVICE_ID]'));
       expect(scrubbed, contains('[UUID]'));
+    });
+
+    test('ErrorReportingService scrubs email addresses and access/refresh tokens', () {
+      const raw =
+          'AuthError email="driver+test@example.com" alt=dev_123456@rushout.io '
+          'payload={"access_token": "jwt.access.secret_123", "refresh_token": "rt_secret_xyz+99="} '
+          'query=https://example.supabase.co/callback?access_token=tok_a1&refresh_token=tok_r2';
+
+      final scrubbed = ErrorReportingService.scrubSensitiveData(raw);
+
+      expect(scrubbed.contains('driver+test@example.com'), isFalse);
+      expect(scrubbed.contains('dev_123456@rushout.io'), isFalse);
+      expect(scrubbed.contains('jwt.access.secret_123'), isFalse);
+      expect(scrubbed.contains('rt_secret_xyz+99='), isFalse);
+      expect(scrubbed.contains('tok_a1'), isFalse);
+      expect(scrubbed.contains('tok_r2'), isFalse);
+      expect(scrubbed, contains('[EMAIL]'));
+      expect(scrubbed, contains('"access_token": "[REDACTED]"'));
+      expect(scrubbed, contains('"refresh_token": "[REDACTED]"'));
+      expect(scrubbed, contains('access_token=[REDACTED]&refresh_token=[REDACTED]'));
+    });
+
+    test('AudioService pauses immediately if app goes to background while startBgm play() is in-flight [EDGE-03]', () async {
+      final playGate = Completer<void>();
+      final bgmPlayer = _FakeAudioPlayer()..onPlay = () => playGate.future;
+      final audioService = AudioService(
+        bgmPlayerFactory: () => bgmPlayer,
+        sfxPlayerFactory: () => _FakeAudioPlayer(),
+      );
+
+      await audioService.init();
+      final startFuture = audioService.startBgm();
+      await Future<void>.delayed(Duration.zero);
+
+      // User presses Home button before async play() resolves
+      await audioService.handleAppLifecycleState(AppLifecycleState.paused);
+      expect(audioService.isInBackground, isTrue);
+      expect(bgmPlayer.pauseCalls, 0); // Not loaded yet
+
+      playGate.complete();
+      await startFuture;
+
+      // Must immediately pause after play() completes
+      expect(bgmPlayer.playCalls, 1);
+      expect(bgmPlayer.pauseCalls, 1);
+
+      // Returning to foreground resumes BGM
+      await audioService.handleAppLifecycleState(AppLifecycleState.resumed);
+      expect(audioService.isInBackground, isFalse);
+      expect(bgmPlayer.resumeCalls, 1);
+
+      await audioService.dispose();
+    });
+
+    test('AudioService skips startBgm while already in background and starts on resume [EDGE-03]', () async {
+      final bgmPlayer = _FakeAudioPlayer();
+      final audioService = AudioService(
+        bgmPlayerFactory: () => bgmPlayer,
+        sfxPlayerFactory: () => _FakeAudioPlayer(),
+      );
+
+      await audioService.init();
+      await audioService.handleAppLifecycleState(AppLifecycleState.hidden);
+      expect(audioService.isInBackground, isTrue);
+
+      await audioService.startBgm();
+      expect(bgmPlayer.playCalls, 0);
+
+      await audioService.handleAppLifecycleState(AppLifecycleState.resumed);
+      expect(bgmPlayer.playCalls, 1);
+
+      await audioService.dispose();
+    });
+
+    test('AppDependencies.init disposes AudioService if a subsequent initialization step fails [EDGE-04]', () async {
+      final bgmPlayer = _FakeAudioPlayer();
+      final sfxPlayers = <_FakeAudioPlayer>[];
+      final audioService = AudioService(
+        bgmPlayerFactory: () => bgmPlayer,
+        sfxPlayerFactory: () {
+          final p = _FakeAudioPlayer();
+          sfxPlayers.add(p);
+          return p;
+        },
+      );
+
+      await expectLater(
+        () => AppDependencies.init(
+          audioService: audioService,
+          playerIdentityService: _FailingPlayerIdentityService(),
+        ),
+        throwsStateError,
+      );
+
+      expect(bgmPlayer.disposeCalls, 1);
+      expect(sfxPlayers.length, 4);
+      expect(sfxPlayers.every((p) => p.disposeCalls == 1), isTrue);
     });
   });
 }

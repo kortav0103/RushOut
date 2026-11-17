@@ -154,7 +154,7 @@ void main() {
     });
 
     test(
-      'parses assets/levels/rush1000.txt into 4050 levels (1350 Easy, 1350 Medium, 1350 Hard) without walls',
+      'parses assets/levels/rush1000.txt into 3379 levels (4 Easy, 1800 Medium, 1575 Hard) without walls',
       () {
         final file = File('assets/levels/rush1000.txt');
         expect(file.existsSync(), isTrue);
@@ -162,7 +162,7 @@ void main() {
         final content = file.readAsStringSync();
         final levels = LevelParser.parseCampaignLevels(content);
 
-        expect(levels.length, 4050);
+        expect(levels.length, 3379);
 
         final easyLevels =
             levels.where((l) => l.difficulty == Difficulty.easy).toList();
@@ -171,9 +171,9 @@ void main() {
         final hardLevels =
             levels.where((l) => l.difficulty == Difficulty.hard).toList();
 
-        expect(easyLevels.length, 1350);
-        expect(mediumLevels.length, 1350);
-        expect(hardLevels.length, 1350);
+        expect(easyLevels.length, 4);
+        expect(mediumLevels.length, 1800);
+        expect(hardLevels.length, 1575);
 
         for (final level in easyLevels) {
           expect(level.optimalMoves, inInclusiveRange(5, 10));
@@ -187,6 +187,74 @@ void main() {
           expect(level.optimalMoves, inInclusiveRange(19, 25));
           expect(LevelParser.containsWall(level.boardString), isFalse);
         }
+      },
+    );
+
+    test(
+      'campaign_ordered.txt contains 3379 pre-ordered levels without "x" matching LevelOrderingPipeline',
+      () {
+        final orderedFile = File('assets/levels/campaign_ordered.txt');
+        final rawFile = File('assets/levels/rush1000.txt');
+        expect(orderedFile.existsSync(), isTrue);
+        expect(rawFile.existsSync(), isTrue);
+
+        final orderedLevels = LevelParser.parsePreOrderedCampaignLevels(
+          orderedFile.readAsStringSync(),
+        );
+        final expectedLevels = LevelParser.parseCampaignLevels(
+          rawFile.readAsStringSync(),
+        );
+
+        expect(orderedLevels.length, 3379);
+        expect(expectedLevels.length, 3379);
+
+        final easyCount =
+            orderedLevels.where((l) => l.difficulty == Difficulty.easy).length;
+        final mediumCount =
+            orderedLevels.where((l) => l.difficulty == Difficulty.medium).length;
+        final hardCount =
+            orderedLevels.where((l) => l.difficulty == Difficulty.hard).length;
+        expect(easyCount, 4);
+        expect(mediumCount, 1800);
+        expect(hardCount, 1575);
+
+        for (int i = 0; i < orderedLevels.length; i++) {
+          final actual = orderedLevels[i];
+          final expected = expectedLevels[i];
+
+          expect(actual.id, i + 1);
+          expect(actual.id, expected.id);
+          expect(actual.difficulty, expected.difficulty);
+          expect(actual.optimalMoves, expected.optimalMoves);
+          expect(actual.boardString, expected.boardString);
+          expect(actual.clusterSize, expected.clusterSize);
+          expect(actual.isUnlocked, i == 0);
+          expect(LevelParser.containsWall(actual.boardString), isFalse);
+        }
+      },
+    );
+
+    test(
+      'parsePreOrderedCampaignLevels falls back to parseCampaignLevels when fewer than 4050 lines',
+      () {
+        const mockRawContent = '''
+06 $validBoardString 25
+14 $validBoardString 40
+21 $validBoardString 80
+''';
+        final levels = LevelParser.parsePreOrderedCampaignLevels(mockRawContent);
+
+        expect(levels.length, 3);
+        expect(levels[0].id, 1);
+        expect(levels[0].optimalMoves, 6);
+        expect(levels[0].difficulty, Difficulty.easy);
+        expect(levels[0].isUnlocked, isTrue);
+        expect(levels[1].id, 2);
+        expect(levels[1].optimalMoves, 14);
+        expect(levels[1].difficulty, Difficulty.medium);
+        expect(levels[2].id, 3);
+        expect(levels[2].optimalMoves, 21);
+        expect(levels[2].difficulty, Difficulty.hard);
       },
     );
   });

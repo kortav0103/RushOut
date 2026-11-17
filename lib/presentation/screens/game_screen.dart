@@ -247,14 +247,18 @@ class _GameScreenState extends State<GameScreen> {
     _showWinModal(state, isTutorialComplete: state.isTutorialMode);
   }
 
-  void _showSnackBar(String message) {
+  void _showSnackBar(
+    String message, {
+    Color backgroundColor = DaylightColors.inkPrimary,
+    Duration duration = const Duration(seconds: 2),
+  }) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(
         SnackBar(
-          backgroundColor: DaylightColors.inkPrimary,
-          duration: const Duration(seconds: 2),
+          backgroundColor: backgroundColor,
+          duration: duration,
           content: Text(
             message,
             style: DaylightTypography.rounded(
@@ -445,8 +449,22 @@ class _GameScreenState extends State<GameScreen> {
   Widget build(BuildContext context) {
     return BlocProvider<GameCubit>.value(
       value: _gameCubit,
-      child: BlocBuilder<GameCubit, GameState>(
-        builder: (context, state) {
+      child: BlocListener<GameCubit, GameState>(
+        listenWhen: (previous, current) =>
+            current.saveErrorMessage != null &&
+            current.saveErrorMessage != previous.saveErrorMessage,
+        listener: (context, state) {
+          final message = state.saveErrorMessage;
+          if (message != null) {
+            _showSnackBar(
+              message,
+              backgroundColor: DaylightColors.frontierAmberLip,
+              duration: const Duration(seconds: 3),
+            );
+          }
+        },
+        child: BlocBuilder<GameCubit, GameState>(
+          builder: (context, state) {
           return Scaffold(
             backgroundColor: DaylightColors.canvasBg,
             appBar: AppBar(
@@ -814,6 +832,7 @@ class _GameScreenState extends State<GameScreen> {
             ),
           );
         },
+        ),
       ),
     );
   }

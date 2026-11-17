@@ -4,10 +4,14 @@ import 'package:rush_out/core/utils/level_parser.dart';
 import 'package:rush_out/domain/entities/level.dart';
 
 /// Standalone CLI script to parse `assets/levels/rush1000.txt`,
-/// filter out lines containing `'x'` (fixed walls), and output 4,050 standard
-/// campaign levels (1,350 Easy [5-10], 1,350 Medium [11-18], 1,350 Hard [19-25]).
+/// filter out lines containing `'x'` (fixed walls), run
+/// `LevelOrderingPipeline.orderLevels` once at build time, and write
+/// 4,050 pre-ordered campaign levels to `assets/levels/campaign_ordered.txt`
+/// using format: `<id> <difficulty> <optimal_moves> <36_char_board> <cluster_size>`.
 void main(List<String> args) {
   final inputPath = args.isNotEmpty ? args[0] : 'assets/levels/rush1000.txt';
+  final outputPath =
+      args.length >= 2 ? args[1] : 'assets/levels/campaign_ordered.txt';
   final file = File(inputPath);
 
   if (!file.existsSync()) {
@@ -18,32 +22,25 @@ void main(List<String> args) {
   final rawContent = file.readAsStringSync();
   final levels = LevelParser.parseCampaignLevels(rawContent);
 
-  final easy = levels.where((l) => l.difficulty == Difficulty.easy).toList();
-  final medium =
-      levels.where((l) => l.difficulty == Difficulty.medium).toList();
-  final hard = levels.where((l) => l.difficulty == Difficulty.hard).toList();
+  final easyCount =
+      levels.where((l) => l.difficulty == Difficulty.easy).length;
+  final mediumCount =
+      levels.where((l) => l.difficulty == Difficulty.medium).length;
+  final hardCount =
+      levels.where((l) => l.difficulty == Difficulty.hard).length;
 
   stdout.writeln('=== RUSHOUT LEVEL PARSER SUMMARY ===');
   stdout.writeln('Source file : $inputPath');
   stdout.writeln('Total levels: ${levels.length}');
-  stdout.writeln('  - Easy   (5-10 moves) : ${easy.length} levels');
-  stdout.writeln('  - Medium (11-18 moves): ${medium.length} levels');
-  stdout.writeln('  - Hard   (19-25 moves): ${hard.length} levels');
+  stdout.writeln('  - Easy   (5-10 moves) : $easyCount levels');
+  stdout.writeln('  - Medium (11-18 moves): $mediumCount levels');
+  stdout.writeln('  - Hard   (19-25 moves): $hardCount levels');
   stdout.writeln('------------------------------------');
 
-  for (final level in levels) {
-    final vehicles = LevelParser.parseBoardString(level.boardString);
-    stdout.writeln(
-      'Level #${level.id.toString().padLeft(2, '0')} '
-      '[${level.difficulty.label.padRight(6)}] | '
-      'Optimal Moves: ${level.optimalMoves.toString().padLeft(2, '0')} | '
-      'Vehicles: ${vehicles.length.toString().padLeft(2, '0')} | '
-      'Board: ${level.boardString}',
-    );
-  }
+  final outputFile = File(outputPath);
+  outputFile.parent.createSync(recursive: true);
 
-  if (args.length >= 2) {
-    final outputJsonFile = File(args[1]);
+  if (outputPath.endsWith('.json')) {
     final jsonList = levels
         .map(
           (l) => {
@@ -55,9 +52,21 @@ void main(List<String> args) {
           },
         )
         .toList();
-    outputJsonFile.writeAsStringSync(
+    outputFile.writeAsStringSync(
       const JsonEncoder.withIndent('  ').convert(jsonList),
     );
-    stdout.writeln('Exported ${levels.length} parsed levels to ${outputJsonFile.path}');
+  } else {
+    final buffer = StringBuffer();
+    for (final level in levels) {
+      buffer.writeln(
+        '${level.id} ${level.difficulty.name} ${level.optimalMoves} '
+        '${level.boardString} ${level.clusterSize}',
+      );
+    }
+    outputFile.writeAsStringSync(buffer.toString());
   }
+
+  stdout.writeln(
+    'Exported ${levels.length} pre-ordered levels to ${outputFile.path}',
+  );
 }

@@ -203,20 +203,21 @@ class _IndexedPool {
   }
 }
 
-/// Deterministic 3-zone commercial level ordering pipeline (`#1` to `#4050`)
-/// with layout-diversity spacing so near-identical puzzle variants are separated:
-/// - Levels `#1–#6`: Strict raw easiest sorted by
-///   `(optimalMoves, vehicleCount, initialBlockers)` with distinct board geometries.
-/// - Levels `#7–#19`: Slow linear ramp-up (13 ascending `difficultyScore` levels)
-///   with distinct board geometries.
-/// - Levels `#20–#4050`: 10-Level Commercial Sawtooth Wave pacing:
-///   Warm-up (`L0, L1, L3`) -> Escalation (`L4..L8`) -> Hard Boss Spike (slot 9) -> Breather (`L2`, slot 10),
-///   spreading near-duplicate puzzle families across a sliding window of 55 levels.
+/// Deterministic level ordering pipeline with layout-diversity spacing:
+/// - Index `0` (Tutorial): Strict raw easiest Easy level (`_compareRawEasiest`).
+/// - `#1–#3`: 3 Easy levels with distinct `optimalMoves` and distinct layout from Tutorial.
+/// - `#4–#7`: 4 Medium levels with distinct `optimalMoves`.
+/// - `#8–#10`: 3 Hard levels with distinct `optimalMoves`.
+/// - Excess Easy levels after `#3` are discarded.
+/// - `#11+`: Medium and Hard only, 10-level Commercial Sawtooth Wave pacing,
+///   strictly enforcing at most 3 consecutive levels with the same `optimalMoves`.
 class LevelOrderingPipeline {
   LevelOrderingPipeline._();
 
-  static const int rawEasiestCount = 6;
-  static const int rampCount = 13;
+  static const int onboardingEasyCount = 3;
+  static const int onboardingMediumCount = 4;
+  static const int onboardingHardCount = 3;
+  static const int maxConsecutiveSameOptimalMoves = 3;
   static const int microWaveSize = 10;
   static const double _similarityThreshold = 0.60;
   static const int _diversityWindow = 55;
@@ -270,35 +271,27 @@ class LevelOrderingPipeline {
     }
   }
 
-  static _IndexedLevel _pickDiverse(
+  static _IndexedLevel? _pickDiverse(
     _IndexedPool pool,
     Iterable<_BoardMask> recentMasks, {
     required int lookahead,
     double? minScore,
-    _IndexedLevel? minRawFloor,
-    bool lockToHeadRawBucket = false,
+    Set<int>? forbiddenOptimalMoves,
+    bool strictForbidden = false,
   }) {
     int bestIndex = -1;
     double bestSimilarity = 2.0;
     int scanned = 0;
 
-    final headItem = pool.head < pool.items.length ? pool.items[pool.head] : null;
-
     for (int i = pool.head; i < pool.items.length; i++) {
       if (pool.used[i]) continue;
       final candidate = pool.items[i];
 
-      if (lockToHeadRawBucket &&
-          headItem != null &&
-          (candidate.level.optimalMoves != headItem.level.optimalMoves ||
-              candidate.metrics.vehicleCount != headItem.metrics.vehicleCount)) {
-        break;
-      }
-
       if (minScore != null && candidate.metrics.difficultyScore < minScore) {
         continue;
       }
-      if (minRawFloor != null && _compareRawEasiest(candidate, minRawFloor) < 0) {
+      if (forbiddenOptimalMoves != null &&
+          forbiddenOptimalMoves.contains(candidate.level.optimalMoves)) {
         continue;
       }
 
@@ -327,6 +320,10 @@ class LevelOrderingPipeline {
       for (int i = pool.head; i < pool.items.length; i++) {
         if (pool.used[i]) continue;
         final candidate = pool.items[i];
+        if (forbiddenOptimalMoves != null &&
+            forbiddenOptimalMoves.contains(candidate.level.optimalMoves)) {
+          continue;
+        }
         if (candidate.metrics.difficultyScore >= minScore) {
           return pool.takeAt(i);
         }
@@ -341,12 +338,24 @@ class LevelOrderingPipeline {
       }
     }
 
+    if (strictForbidden &&
+        forbiddenOptimalMoves != null &&
+        forbiddenOptimalMoves.isNotEmpty) {
+      for (int i = pool.head; i < pool.items.length; i++) {
+        if (!pool.used[i] &&
+            !forbiddenOptimalMoves.contains(pool.items[i].level.optimalMoves)) {
+          return pool.takeAt(i);
+        }
+      }
+      return null;
+    }
+
     for (int i = pool.head; i < pool.items.length; i++) {
       if (!pool.used[i]) {
         return pool.takeAt(i);
       }
     }
-    throw StateError('Pool unexpectedly exhausted.');
+    return null;
   }
 
   static List<Level> orderLevels(
@@ -374,79 +383,216 @@ class LevelOrderingPipeline {
       );
     }
 
-    final Queue<_BoardMask> recentWindow = Queue<_BoardMask>();
-
-    // A. Levels #1 - #6: Strict Raw Easiest, skipping near-identical layouts
-    final rawSorted = List<_IndexedLevel>.from(indexed)..sort(_compareRawEasiest);
-    final rawPool = _IndexedPool(rawSorted);
-    final int takeRaw =
-        rawSorted.length < rawEasiestCount ? rawSorted.length : rawEasiestCount;
-    final List<_IndexedLevel> zone1 = [];
-    _IndexedLevel? rawFloor;
-    for (int i = 0; i < takeRaw; i++) {
-      final chosen = _pickDiverse(
-        rawPool,
-        recentWindow,
-        lookahead: rawSorted.length,
-        minRawFloor: rawFloor,
-        lockToHeadRawBucket: true,
-      );
-      zone1.add(chosen);
-      rawFloor = chosen;
-      _pushWindow(recentWindow, chosen.mask);
-    }
-    final Set<int> pickedIndices = zone1.map((e) => e.originalIndex).toSet();
-
-    // Remaining levels sorted strictly ascending by difficultyScore
-    final List<_IndexedLevel> remainingByScore = indexed
-        .where((item) => !pickedIndices.contains(item.originalIndex))
+    final easyItems = indexed
+        .where((e) => e.level.difficulty == Difficulty.easy)
+        .toList()
+      ..sort(_compareRawEasiest);
+    final mediumItems = indexed
+        .where((e) => e.level.difficulty == Difficulty.medium)
+        .toList()
+      ..sort(_compareDifficultyScore);
+    final hardItems = indexed
+        .where((e) => e.level.difficulty == Difficulty.hard)
         .toList()
       ..sort(_compareDifficultyScore);
 
-    // B. Levels #7 - #19: Slow Linear Ramp-Up (13 ascending difficultyScore, diverse layouts)
-    final rampPool = _IndexedPool(remainingByScore);
-    final int takeRamp = remainingByScore.length < rampCount
-        ? remainingByScore.length
-        : rampCount;
-    final List<_IndexedLevel> zone2 = [];
-    double prevRampScore = -1.0;
-    for (int i = 0; i < takeRamp; i++) {
-      final chosen = _pickDiverse(
-        rampPool,
-        recentWindow,
-        lookahead: 200,
-        minScore: prevRampScore < 0 ? null : prevRampScore,
-      );
-      zone2.add(chosen);
-      prevRampScore = chosen.metrics.difficultyScore;
-      _pushWindow(recentWindow, chosen.mask);
-      pickedIndices.add(chosen.originalIndex);
+    final easyPool = _IndexedPool(easyItems);
+    final mediumPool = _IndexedPool(mediumItems);
+    final hardPool = _IndexedPool(hardItems);
+
+    final Queue<_BoardMask> recentWindow = Queue<_BoardMask>();
+    final List<_IndexedLevel> onboarding = [];
+
+    // 0. Tutorial (index 0): strict raw easiest Easy level (unchanged)
+    _IndexedLevel? tutorial;
+    if (easyPool.remainingCount > 0) {
+      tutorial = easyPool.takeAt(0);
+    } else if (mediumPool.remainingCount > 0) {
+      tutorial = mediumPool.takeAt(0);
+    } else if (hardPool.remainingCount > 0) {
+      tutorial = hardPool.takeAt(0);
+    }
+    if (tutorial != null) {
+      onboarding.add(tutorial);
+      _pushWindow(recentWindow, tutorial.mask);
     }
 
-    // C. Levels #20 - #4050: 10-Level Commercial Sawtooth Waves with diversity spacing
-    final List<_IndexedLevel> remaining = remainingByScore
-        .where((item) => !pickedIndices.contains(item.originalIndex))
-        .toList();
-    final mainPool = _IndexedPool(
-      remaining.where((e) => e.level.difficulty != Difficulty.hard).toList(),
-    );
-    final hardPool = _IndexedPool(
-      remaining.where((e) => e.level.difficulty == Difficulty.hard).toList(),
-    );
+    // 1. Levels #1 - #3: 3 Easy levels (distinct optimalMoves, not identical to tutorial)
+    final Set<int> usedEasyMoves = {
+      if (tutorial != null) tutorial.level.optimalMoves,
+    };
+    final int takeEasy = easyPool.remainingCount < onboardingEasyCount
+        ? easyPool.remainingCount
+        : onboardingEasyCount;
+    for (int i = 0; i < takeEasy; i++) {
+      var chosen = _pickDiverse(
+        easyPool,
+        recentWindow,
+        lookahead: easyItems.length,
+        forbiddenOptimalMoves: usedEasyMoves,
+        strictForbidden: true,
+      );
+      if (chosen == null && tutorial != null) {
+        final withoutTutorialMove = Set<int>.from(usedEasyMoves)
+          ..remove(tutorial.level.optimalMoves);
+        chosen = _pickDiverse(
+          easyPool,
+          recentWindow,
+          lookahead: easyItems.length,
+          forbiddenOptimalMoves: withoutTutorialMove,
+          strictForbidden: true,
+        );
+      }
+      chosen ??= _pickDiverse(
+        easyPool,
+        recentWindow,
+        lookahead: easyItems.length,
+      );
+      if (chosen == null) break;
+      onboarding.add(chosen);
+      usedEasyMoves.add(chosen.level.optimalMoves);
+      _pushWindow(recentWindow, chosen.mask);
+    }
 
+    // 2. Levels #4 - #7: 4 Medium levels (distinct optimalMoves)
+    final Set<int> usedMediumMoves = {};
+    final int takeMedium = mediumPool.remainingCount < onboardingMediumCount
+        ? mediumPool.remainingCount
+        : onboardingMediumCount;
+    for (int i = 0; i < takeMedium; i++) {
+      var chosen = _pickDiverse(
+        mediumPool,
+        recentWindow,
+        lookahead: 200,
+        forbiddenOptimalMoves: usedMediumMoves,
+        strictForbidden: true,
+      );
+      chosen ??= _pickDiverse(
+        mediumPool,
+        recentWindow,
+        lookahead: 200,
+      );
+      if (chosen == null) break;
+      onboarding.add(chosen);
+      usedMediumMoves.add(chosen.level.optimalMoves);
+      _pushWindow(recentWindow, chosen.mask);
+    }
+
+    // 3. Levels #8 - #10: 3 Hard levels (distinct optimalMoves)
+    final Set<int> usedHardMoves = {};
+    final int takeHard = hardPool.remainingCount < onboardingHardCount
+        ? hardPool.remainingCount
+        : onboardingHardCount;
+    for (int i = 0; i < takeHard; i++) {
+      var chosen = _pickDiverse(
+        hardPool,
+        recentWindow,
+        lookahead: 200,
+        forbiddenOptimalMoves: usedHardMoves,
+        strictForbidden: true,
+      );
+      chosen ??= _pickDiverse(
+        hardPool,
+        recentWindow,
+        lookahead: 200,
+      );
+      if (chosen == null) break;
+      onboarding.add(chosen);
+      usedHardMoves.add(chosen.level.optimalMoves);
+      _pushWindow(recentWindow, chosen.mask);
+    }
+
+    // Remaining Easy levels are discarded (not included in Zone 3).
+    // 4. Levels #11+: Medium & Hard only, 10-Level Sawtooth Waves,
+    //    strictly enforcing at most 3 consecutive levels with the same optimalMoves.
     final List<_IndexedLevel> zone3 = [];
+    int? lastZone3Move;
+    int zone3Run = 0;
 
-    // 1. Commercial waves combining 9 progressive Easy/Medium levels + 1 Hard Boss Spike
-    while (mainPool.remainingCount >= 9 && hardPool.remainingCount >= 1) {
+    bool canAppendZone3(_IndexedLevel item) {
+      return !(zone3Run >= maxConsecutiveSameOptimalMoves &&
+          item.level.optimalMoves == lastZone3Move);
+    }
+
+    Set<int>? currentForbidden() {
+      if (zone3Run >= maxConsecutiveSameOptimalMoves && lastZone3Move != null) {
+        return {lastZone3Move!};
+      }
+      return null;
+    }
+
+    void appendZone3(_IndexedLevel item) {
+      if (item.level.optimalMoves == lastZone3Move) {
+        zone3Run++;
+      } else {
+        lastZone3Move = item.level.optimalMoves;
+        zone3Run = 1;
+      }
+      zone3.add(item);
+      _pushWindow(recentWindow, item.mask);
+    }
+
+    bool commitWave(
+      List<_IndexedLevel> wave, {
+      required List<_IndexedPool> bridgePools,
+    }) {
+      final remainingWave = List<_IndexedLevel>.from(wave);
+      while (remainingWave.isNotEmpty) {
+        int pickIdx = -1;
+        for (int i = 0; i < remainingWave.length; i++) {
+          if (canAppendZone3(remainingWave[i])) {
+            pickIdx = i;
+            break;
+          }
+        }
+        if (pickIdx >= 0) {
+          appendZone3(remainingWave.removeAt(pickIdx));
+          continue;
+        }
+
+        // All remaining items in this wave share lastZone3Move and zone3Run >= 3.
+        // Try pulling a diverse bridge item with a different optimalMoves.
+        _IndexedLevel? bridge;
+        final forbidden = currentForbidden();
+        for (final pool in bridgePools) {
+          if (pool.remainingCount == 0) continue;
+          bridge = _pickDiverse(
+            pool,
+            recentWindow,
+            lookahead: _zone3Lookahead,
+            forbiddenOptimalMoves: forbidden,
+            strictForbidden: true,
+          );
+          if (bridge != null) break;
+        }
+        if (bridge == null) {
+          return false;
+        }
+        appendZone3(bridge);
+      }
+      return true;
+    }
+
+    // Commercial waves combining 9 progressive Medium levels + 1 Hard Boss Spike
+    while (mediumPool.remainingCount >= 9 && hardPool.remainingCount >= 1) {
       final Queue<_BoardMask> localWindow = Queue<_BoardMask>.from(recentWindow);
       final List<_IndexedLevel> chunk = [];
+      final Map<int, int> waveMoveCounts = {};
       for (int i = 0; i < 9; i++) {
+        final forbiddenInWave = {
+          for (final entry in waveMoveCounts.entries)
+            if (entry.value >= maxConsecutiveSameOptimalMoves) entry.key,
+        };
         final chosen = _pickDiverse(
-          mainPool,
+          mediumPool,
           localWindow,
           lookahead: _zone3Lookahead,
-        );
+          forbiddenOptimalMoves:
+              forbiddenInWave.isEmpty ? null : forbiddenInWave,
+        )!;
         chunk.add(chosen);
+        waveMoveCounts[chosen.level.optimalMoves] =
+            (waveMoveCounts[chosen.level.optimalMoves] ?? 0) + 1;
         _pushWindow(localWindow, chosen.mask);
       }
       chunk.sort(_compareDifficultyScore);
@@ -456,7 +602,7 @@ class LevelOrderingPipeline {
         localWindow,
         lookahead: _zone3Lookahead,
         minScore: chunk[8].metrics.difficultyScore,
-      );
+      )!;
 
       final wave = [
         chunk[0],
@@ -470,17 +616,16 @@ class LevelOrderingPipeline {
         bossSpike,
         chunk[2],
       ];
-      zone3.addAll(wave);
-      for (final w in wave) {
-        _pushWindow(recentWindow, w.mask);
+      if (!commitWave(wave, bridgePools: [hardPool, mediumPool])) {
+        break;
       }
     }
 
-    // 2. Remaining levels continue in 10-level Micro-Waves ([L0, L1, L3..L9, L2])
-    //    while preserving layout-diversity spacing across the 55-level window.
+    // Remaining Medium + Hard levels continue in 10-level Micro-Waves
+    // while strictly enforcing max 3 consecutive same optimalMoves.
     final List<_IndexedLevel> tailItems = [
-      for (int i = mainPool.head; i < mainPool.items.length; i++)
-        if (!mainPool.used[i]) mainPool.items[i],
+      for (int i = mediumPool.head; i < mediumPool.items.length; i++)
+        if (!mediumPool.used[i]) mediumPool.items[i],
       for (int i = hardPool.head; i < hardPool.items.length; i++)
         if (!hardPool.used[i]) hardPool.items[i],
     ]..sort(_compareDifficultyScore);
@@ -489,13 +634,22 @@ class LevelOrderingPipeline {
     while (tailPool.remainingCount >= microWaveSize) {
       final Queue<_BoardMask> localWindow = Queue<_BoardMask>.from(recentWindow);
       final List<_IndexedLevel> chunk = [];
+      final Map<int, int> waveMoveCounts = {};
       for (int i = 0; i < microWaveSize; i++) {
+        final forbiddenInWave = {
+          for (final entry in waveMoveCounts.entries)
+            if (entry.value >= maxConsecutiveSameOptimalMoves) entry.key,
+        };
         final chosen = _pickDiverse(
           tailPool,
           localWindow,
           lookahead: _zone3Lookahead,
-        );
+          forbiddenOptimalMoves:
+              forbiddenInWave.isEmpty ? null : forbiddenInWave,
+        )!;
         chunk.add(chosen);
+        waveMoveCounts[chosen.level.optimalMoves] =
+            (waveMoveCounts[chosen.level.optimalMoves] ?? 0) + 1;
         _pushWindow(localWindow, chosen.mask);
       }
       chunk.sort(_compareDifficultyScore);
@@ -512,28 +666,25 @@ class LevelOrderingPipeline {
         chunk[9],
         chunk[2],
       ];
-      zone3.addAll(wave);
-      for (final w in wave) {
-        _pushWindow(recentWindow, w.mask);
+      if (!commitWave(wave, bridgePools: [tailPool])) {
+        break;
       }
     }
 
-    // Trailing remainder (< 10 levels) still goes through diversity selection
-    // and stays ordered by ascending difficultyScore.
-    final List<_IndexedLevel> remainder = [];
+    // Trailing remainder (< 10 levels) still enforces diversity and max 3 consecutive optimalMoves
     while (tailPool.remainingCount > 0) {
       final chosen = _pickDiverse(
         tailPool,
         recentWindow,
         lookahead: _zone3Lookahead,
+        forbiddenOptimalMoves: currentForbidden(),
+        strictForbidden: true,
       );
-      remainder.add(chosen);
-      _pushWindow(recentWindow, chosen.mask);
+      if (chosen == null) break;
+      appendZone3(chosen);
     }
-    remainder.sort(_compareDifficultyScore);
-    zone3.addAll(remainder);
 
-    final combined = [...zone1, ...zone2, ...zone3];
+    final combined = [...onboarding, ...zone3];
 
     if (!reassignSequentialIds) {
       return combined.map((e) => e.level).toList();

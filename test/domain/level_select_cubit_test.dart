@@ -31,12 +31,6 @@ class _FakeLevelRepository implements LevelRepository {
   }) async {}
 
   @override
-  Future<int> getRemainingHints() async => 3;
-
-  @override
-  Future<int> updateRemainingHints(int delta) async => 3 + delta;
-
-  @override
   Future<InProgressLevelState?> getInProgressLevel(
     int levelId, {
     String? expectedBoardString,

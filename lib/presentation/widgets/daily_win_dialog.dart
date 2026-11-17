@@ -6,13 +6,11 @@ import 'tactile_widgets.dart';
 
 class DailyWinDialog extends StatefulWidget {
   final String? defaultPlayerName;
-  final VoidCallback onReplay;
   final VoidCallback? onOpenLeaderboard;
 
   const DailyWinDialog({
     super.key,
     this.defaultPlayerName,
-    required this.onReplay,
     this.onOpenLeaderboard,
   });
 
@@ -20,7 +18,6 @@ class DailyWinDialog extends StatefulWidget {
     BuildContext context, {
     required DailyCubit dailyCubit,
     String? defaultPlayerName,
-    required VoidCallback onReplay,
     VoidCallback? onOpenLeaderboard,
   }) {
     return showDialog<void>(
@@ -30,7 +27,6 @@ class DailyWinDialog extends StatefulWidget {
         value: dailyCubit,
         child: DailyWinDialog(
           defaultPlayerName: defaultPlayerName,
-          onReplay: onReplay,
           onOpenLeaderboard: onOpenLeaderboard,
         ),
       ),
@@ -343,10 +339,7 @@ class _DailyWinDialogState extends State<DailyWinDialog> {
                   children: [
                     Expanded(
                       child: TactileKeycap(
-                        onTap: () {
-                          Navigator.of(ctx).pop();
-                          widget.onReplay();
-                        },
+                        onTap: () => Navigator.of(ctx).pop(),
                         surfaceColor: DaylightColors.canvasBg,
                         lipColor: DaylightColors.surfaceLip,
                         borderColor: DaylightColors.surfaceLip,
@@ -355,7 +348,7 @@ class _DailyWinDialogState extends State<DailyWinDialog> {
                         padding: const EdgeInsets.symmetric(vertical: 11),
                         child: Center(
                           child: Text(
-                            'Replay',
+                            'Close',
                             style: DaylightTypography.rounded(
                               fontSize: 14,
                               fontWeight: FontWeight.w800,

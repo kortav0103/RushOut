@@ -198,13 +198,13 @@ class LevelParser {
   }
 
   /// Parses the entire content of `rush1000.txt`, filters out lines with `'x'`,
-  /// and extracts up to `3 * perDifficulty` campaign levels (default 4,050):
-  /// - Easy: optimalMoves 5..10 (1,350 levels by default)
-  /// - Medium: optimalMoves 11..18 (1,350 levels by default)
-  /// - Hard: optimalMoves 19..25 (1,350 levels by default)
+  /// and extracts campaign levels:
+  /// - Easy: optimalMoves 5..10 (used for Tutorial + #1-#3; excess Easy levels are dropped by [LevelOrderingPipeline])
+  /// - Medium: optimalMoves 11..18
+  /// - Hard: optimalMoves 19..25
   static List<Level> parseCampaignLevels(
     String fileContent, {
-    int perDifficulty = AppConstants.levelsPerDifficulty,
+    int? perDifficulty,
   }) {
     final lines = fileContent.split(RegExp(r'\r?\n'));
 
@@ -224,17 +224,19 @@ class LevelParser {
       }
 
       final difficulty = Difficulty.fromOptimalMoves(entry.optimalMoves);
-      if (difficulty == Difficulty.easy && easyEntries.length < perDifficulty) {
+      if (difficulty == Difficulty.easy &&
+          (perDifficulty == null || easyEntries.length < perDifficulty)) {
         easyEntries.add(entry);
       } else if (difficulty == Difficulty.medium &&
-          mediumEntries.length < perDifficulty) {
+          (perDifficulty == null || mediumEntries.length < perDifficulty)) {
         mediumEntries.add(entry);
       } else if (difficulty == Difficulty.hard &&
-          hardEntries.length < perDifficulty) {
+          (perDifficulty == null || hardEntries.length < perDifficulty)) {
         hardEntries.add(entry);
       }
 
-      if (easyEntries.length >= perDifficulty &&
+      if (perDifficulty != null &&
+          easyEntries.length >= perDifficulty &&
           mediumEntries.length >= perDifficulty &&
           hardEntries.length >= perDifficulty) {
         break;
@@ -292,5 +294,83 @@ class LevelParser {
     }
 
     return LevelOrderingPipeline.orderLevels(levels);
+  }
+
+  static Difficulty? _parseDifficultyStrict(String value) {
+    switch (value) {
+      case 'easy':
+        return Difficulty.easy;
+      case 'medium':
+        return Difficulty.medium;
+      case 'hard':
+        return Difficulty.hard;
+      default:
+        return null;
+    }
+  }
+
+  /// Parses pre-ordered campaign levels from `assets/levels/campaign_ordered.txt`
+  /// in a single linear pass without calling [parseBoardString] or
+  /// [LevelOrderingPipeline.orderLevels].
+  ///
+  /// Expected line format:
+  /// `<id> <difficulty> <optimal_moves> <36_char_board> <cluster_size>`
+  ///
+  /// Falls back to [parseCampaignLevels] if [content] contains fewer than
+  /// [AppConstants.totalCampaignLevels] valid pre-ordered entries (e.g., small
+  /// raw mock fixtures in unit tests).
+  static List<Level> parsePreOrderedCampaignLevels(String content) {
+    final lines = content.split('\n');
+    if (lines.length < AppConstants.totalCampaignLevels) {
+      return parseCampaignLevels(content);
+    }
+
+    final List<Level> levels = [];
+    for (int i = 0; i < lines.length; i++) {
+      final trimmed = lines[i].trim();
+      if (trimmed.isEmpty || trimmed.startsWith('#')) {
+        continue;
+      }
+
+      final parts = trimmed.split(' ');
+      if (parts.length != 5) {
+        continue;
+      }
+
+      final id = int.tryParse(parts[0]);
+      final difficulty = _parseDifficultyStrict(parts[1]);
+      final optimalMoves = int.tryParse(parts[2]);
+      final boardString = parts[3];
+      final clusterSize = int.tryParse(parts[4]);
+
+      if (id == null ||
+          id <= 0 ||
+          difficulty == null ||
+          optimalMoves == null ||
+          optimalMoves <= 0 ||
+          boardString.length != AppConstants.boardStringLength ||
+          containsWall(boardString) ||
+          clusterSize == null ||
+          clusterSize < 0) {
+        continue;
+      }
+
+      levels.add(
+        Level(
+          id: id,
+          difficulty: difficulty,
+          optimalMoves: optimalMoves,
+          boardString: boardString,
+          clusterSize: clusterSize,
+          isUnlocked: levels.isEmpty,
+        ),
+      );
+    }
+
+    if (levels.length < AppConstants.totalCampaignLevels) {
+      return parseCampaignLevels(content);
+    }
+
+    return levels;
   }
 }

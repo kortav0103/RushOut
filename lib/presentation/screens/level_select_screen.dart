@@ -257,6 +257,9 @@ class _LevelSelectScreenState extends State<LevelSelectScreen> {
                       ? const ShimmerLoadingView(
                           isBoardLayout: false,
                           itemCount: 6,
+                          label: 'Loading Levels',
+                          subtitle: 'Preparing campaign stages...',
+                          icon: Icons.grid_view_rounded,
                         )
                       : state.errorMessage != null
                           ? ErrorStateView(

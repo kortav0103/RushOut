@@ -9,6 +9,7 @@ enum ProfileActionStatus {
   sendingOtp,
   verifyingOtp,
   syncing,
+  deletingAccount,
   success,
   error,
 }
@@ -68,7 +69,8 @@ class ProfileState extends Equatable {
       status == ProfileActionStatus.savingName ||
       status == ProfileActionStatus.sendingOtp ||
       status == ProfileActionStatus.verifyingOtp ||
-      status == ProfileActionStatus.syncing;
+      status == ProfileActionStatus.syncing ||
+      status == ProfileActionStatus.deletingAccount;
 
   ProfileState copyWith({
     AccountMode? accountMode,
@@ -526,6 +528,45 @@ class ProfileCubit extends Cubit<ProfileState> {
           statusMessage: 'Failed to sign out. Please try again.',
         ),
       );
+    }
+  }
+
+  Future<bool> deleteCloudAccount() async {
+    emit(
+      state.copyWith(
+        status: ProfileActionStatus.deletingAccount,
+        clearStatusMessage: true,
+        clearValidationError: true,
+      ),
+    );
+    try {
+      await _identityService.deleteCloudAccount();
+      emit(
+        state.copyWith(
+          status: ProfileActionStatus.success,
+          otpStep: OtpFlowStep.none,
+          clearPendingEmail: true,
+          statusMessage:
+              'Cloud account deleted. Local progress remains on this device.',
+        ),
+      );
+      return true;
+    } on ServerException catch (e) {
+      emit(
+        state.copyWith(
+          status: ProfileActionStatus.error,
+          statusMessage: e.message,
+        ),
+      );
+      return false;
+    } catch (_) {
+      emit(
+        state.copyWith(
+          status: ProfileActionStatus.error,
+          statusMessage: 'Failed to delete cloud account. Please try again.',
+        ),
+      );
+      return false;
     }
   }
 
